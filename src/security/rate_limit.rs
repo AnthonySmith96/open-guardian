@@ -11,6 +11,9 @@ use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use tracing::{info, warn};
 
+/// Default TTL for idle rate limiter entries (seconds).
+const DEFAULT_ENTRY_TTL_SECS: u64 = 600;
+
 pub const DEFAULT_NORMAL_LIMIT: u32 = 60;
 pub const DEFAULT_FLAGGED_LIMIT: u32 = 30;
 pub const DEFAULT_BLOCKED_LIMIT: u32 = 5;
@@ -75,21 +78,25 @@ struct TokenBucket {
     tokens: u32,
     max_tokens: u32,
     last_refill: Instant,
+    last_access: Instant,
     refill_rate: f64, // tokens per second
 }
 
 impl TokenBucket {
     fn new(max_tokens: u32) -> Self {
+        let now = Instant::now();
         Self {
             tokens: max_tokens,
             max_tokens,
-            last_refill: Instant::now(),
+            last_refill: now,
+            last_access: now,
             refill_rate: max_tokens as f64 / 60.0,
         }
     }
 
     fn try_consume(&mut self) -> bool {
         self.refill();
+        self.last_access = Instant::now();
         if self.tokens > 0 {
             self.tokens -= 1;
             true
@@ -249,6 +256,52 @@ impl PerIpRateLimiter {
         limiters.remove(&ip);
         info!("IP {} removed from rate limiter", ip);
     }
+
+    /// Remove entries that haven't been accessed within `ttl`.
+    pub async fn cleanup_expired(&self, ttl: Duration) -> usize {
+        let mut limiters = self.limiters.write().await;
+        let before = limiters.len();
+        limiters.retain(|_ip, limiter| {
+            // Check the normal bucket's last_access as a proxy for activity
+            let dominated_bucket = match limiter.traffic_class {
+                TrafficClass::Normal => &limiter.normal_bucket,
+                TrafficClass::Flagged => &limiter.flagged_bucket,
+                TrafficClass::Blocked => &limiter.blocked_bucket,
+            };
+            dominated_bucket.last_access.elapsed() < ttl
+        });
+        let removed = before - limiters.len();
+        if removed > 0 {
+            info!(
+                "Rate limiter cleanup: removed {} expired entries ({} remaining)",
+                removed,
+                limiters.len()
+            );
+        }
+        removed
+    }
+
+    /// Returns the current number of tracked IPs.
+    pub async fn len(&self) -> usize {
+        self.limiters.read().await.len()
+    }
+
+    /// Spawn a background task that periodically cleans up expired entries.
+    /// Returns a `JoinHandle` for the cleanup task.
+    pub fn spawn_cleanup_task(
+        self: &Arc<Self>,
+        interval: Duration,
+        ttl: Duration,
+    ) -> tokio::task::JoinHandle<()> {
+        let limiter = Arc::clone(self);
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(interval);
+            loop {
+                ticker.tick().await;
+                limiter.cleanup_expired(ttl).await;
+            }
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -269,6 +322,69 @@ pub async fn apply_rate_limit(limiter: &PerIpRateLimiter, ip: IpAddr) -> Result<
             );
             Err(StatusCode::TOO_MANY_REQUESTS)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::{IpAddr, Ipv4Addr};
+
+    #[tokio::test]
+    async fn test_hashmap_stays_bounded() {
+        let config = RateLimitConfig::default();
+        let limiter = PerIpRateLimiter::new(config);
+
+        // Insert 100 IPs
+        for i in 0..100u8 {
+            let ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, i));
+            limiter.check(ip).await;
+        }
+        assert_eq!(limiter.len().await, 100);
+
+        // Cleanup with a zero TTL should remove all entries
+        let removed = limiter.cleanup_expired(Duration::from_secs(0)).await;
+        assert_eq!(removed, 100);
+        assert_eq!(limiter.len().await, 0);
+    }
+
+    #[tokio::test]
+    async fn test_cleanup_preserves_recent() {
+        let config = RateLimitConfig::default();
+        let limiter = PerIpRateLimiter::new(config);
+
+        let ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+        limiter.check(ip).await;
+
+        // Cleanup with a generous TTL should keep the entry
+        let removed = limiter.cleanup_expired(Duration::from_secs(3600)).await;
+        assert_eq!(removed, 0);
+        assert_eq!(limiter.len().await, 1);
+    }
+
+    #[tokio::test]
+    async fn test_rate_limit_allows_and_denies() {
+        let config = RateLimitConfig {
+            normal_limit: 2,
+            ..Default::default()
+        };
+        let limiter = PerIpRateLimiter::new(config);
+        let ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+
+        // First two should be allowed
+        assert!(matches!(
+            limiter.check(ip).await,
+            RateLimitCheck::Allowed { .. }
+        ));
+        assert!(matches!(
+            limiter.check(ip).await,
+            RateLimitCheck::Allowed { .. }
+        ));
+        // Third should be denied
+        assert!(matches!(
+            limiter.check(ip).await,
+            RateLimitCheck::Denied { .. }
+        ));
     }
 }
 

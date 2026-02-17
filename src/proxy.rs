@@ -1,6 +1,7 @@
 use crate::banner;
 use anyhow::{Context, Result};
 use axum::response::IntoResponse;
+use futures_util::StreamExt;
 use http::{HeaderMap, Method, StatusCode};
 use reqwest::Client;
 use std::time::Duration;
@@ -130,6 +131,14 @@ impl ProxyClient {
         let mut res_builder =
             axum::response::Response::builder().status(response.status().as_u16());
 
+        // Check if this is a streaming SSE response
+        let is_sse = response
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .map(|ct| ct.contains("text/event-stream"))
+            .unwrap_or(false);
+
         for (name, value) in response.headers().iter() {
             let name_str = name.as_str().to_lowercase();
             if name_str != "content-length"
@@ -142,18 +151,31 @@ impl ProxyClient {
             }
         }
 
-        let mut bytes = response
-            .bytes()
-            .await
-            .context("Failed to read upstream response body")?
-            .to_vec();
+        if is_sse {
+            // Stream SSE responses directly without buffering
+            let stream = response.bytes_stream().map(|chunk| {
+                chunk
+                    .map(|b| axum::body::Bytes::from(b.to_vec()))
+                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+            });
+            let body = axum::body::Body::from_stream(stream);
+            Ok(res_builder
+                .body(body)
+                .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response()))
+        } else {
+            let mut bytes = response
+                .bytes()
+                .await
+                .context("Failed to read upstream response body")?
+                .to_vec();
 
-        if bytes.last() != Some(&b'\n') {
-            bytes.push(b'\n');
+            if bytes.last() != Some(&b'\n') {
+                bytes.push(b'\n');
+            }
+
+            Ok(res_builder
+                .body(axum::body::Body::from(bytes))
+                .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response()))
         }
-
-        Ok(res_builder
-            .body(axum::body::Body::from(bytes))
-            .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response()))
     }
 }

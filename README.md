@@ -448,7 +448,7 @@ Add new languages or categories by creating a JSON file in `rules/` and referenc
 
 ```bash
 # Start the proxy
-open-guardian start [--port 8080] [--upstream URL] [--local] [--verbose]
+open-guardian start [--port 8080] [--upstream URL] [--local] [--verbose] [--skip-integrity]
 
 # Security audit — scan for exposed secrets and misconfigurations
 open-guardian audit [path]
@@ -547,17 +547,15 @@ This project is open source. See [LICENSE](LICENSE) for details.
   <em>"The best AI firewall is the one that's always on — and the one that knows the difference between an agent doing its job and an attacker exploiting it."</em>
 </p>
 
-## ✍️ A Note from the Creator
-
-## Note from the Contributors
+## ✍️ Contributors
 
 **Original Author:** Anthony Smith ([@AnthonySmith96](https://github.com/AnthonySmith96)) — founded [CyberIndustree](https://github.com/CyberIndustree), built the original Open-GuardIAn foundation.
 
-**This Fork:** Enhanced by [HeraAndHades](https://github.com/HeraAndHades) — adding enterprise security hardening (Phase 1-2) through human-AI collaboration.
+**v0.1.2 Contributors:** [HeraAndHades](https://github.com/HeraAndHades) — enterprise security hardening through human-AI collaboration.
 
-### What We Added
+### What's New in v0.1.2
 
-This fork extends Anthony's original architecture with **~5,600 lines of security hardening**:
+This release extends the original architecture with **~5,600 lines of security hardening**:
 
 | Module | Original | This Fork |
 |--------|----------|-----------|

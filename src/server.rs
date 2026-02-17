@@ -31,6 +31,7 @@ pub struct ServerConfig {
     pub verbose: bool,
     pub policies: PolicyConfig,
     pub dlp_config: crate::config::DlpConfig,
+    pub skip_integrity: bool,
 }
 
 #[derive(Clone)]
@@ -76,24 +77,33 @@ pub async fn start_server(
         .flatten()
         .unwrap_or_else(|| std::path::PathBuf::from("."));
 
-    let integrity_checker = crate::security::integrity::RuleIntegrityChecker::new(
-        &rules_dir,
-        "default-hmac-key", // Should be configured in production
-        false,              // Emergency kit disabled by default
-    );
-    if let Ok(checker) = integrity_checker {
-        let result = checker.verify();
-        if !result.verified {
-            banner::print_error(&format!(
-                "Rule integrity check failed: {:?}",
-                result.failed_files
-            ));
-            return Err(anyhow::anyhow!(
-                "Security: Rule file integrity verification failed"
-            ));
+    let hmac_key =
+        std::env::var("GUARDIAN_HMAC_KEY").unwrap_or_else(|_| "default-hmac-key".to_string());
+    let skip_integrity = std::env::var("GUARDIAN_SKIP_INTEGRITY")
+        .map(|v| v == "1" || v.to_lowercase() == "true")
+        .unwrap_or(false);
+
+    if config.skip_integrity || skip_integrity {
+        banner::print_warning("Rule integrity checks SKIPPED (--skip-integrity / dev mode)");
+        tracing::warn!("SEC: Integrity verification skipped by flag");
+    } else {
+        let integrity_checker = crate::security::integrity::RuleIntegrityChecker::new(
+            &rules_dir, &hmac_key, false, // Emergency kit disabled by default
+        );
+        if let Ok(checker) = integrity_checker {
+            let result = checker.verify();
+            if !result.verified {
+                banner::print_error(&format!(
+                    "Rule integrity check failed: {:?}",
+                    result.failed_files
+                ));
+                return Err(anyhow::anyhow!(
+                    "Security: Rule file integrity verification failed"
+                ));
+            }
         }
+        // If integrity checker fails to initialize (e.g., no manifest), continue (optional warning)
     }
-    // If integrity checker fails to initialize (e.g., no manifest), continue (optional warning)
 
     let threat_engine = ThreatEngine::new(
         &config.policies.dictionaries,
@@ -652,6 +662,12 @@ async fn handler(
             "Forwarding to [{}] target: {}...",
             model_alias, upstream_url
         ));
+        // Check if request has stream=true (SSE)
+        let is_streaming = json_body
+            .get("stream")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
         let response = match state
             .proxy
             .forward_request(
@@ -666,41 +682,43 @@ async fn handler(
         {
             Ok(mut res) => {
                 // ── Response DLP (Data Loss Prevention) ──
-                // Check response body for PII leaks before returning to client
-                let body = res.body_mut();
-                if let Ok(body_bytes) = axum::body::to_bytes(
-                    std::mem::replace(body, axum::body::Body::empty()),
-                    usize::MAX,
-                )
-                .await
-                {
-                    if let Ok(body_text) = String::from_utf8(body_bytes.to_vec()) {
-                        if let Some(violation) =
-                            check_for_violations(&body_text, Some(&state.dlp_config))
-                        {
-                            if state.dlp_action == DlpAction::Block {
-                                banner::print_warning(&format!(
-                                    "Response DLP BLOCKED: {} leak detected in response from {}",
-                                    violation.description, path_str
-                                ));
-                                log_security_event(
-                                    state.audit_log_path.clone(),
-                                    serde_json::json!({
-                                        "timestamp": Utc::now().to_rfc3339(),
-                                        "event": "response_dlp_blocked",
-                                        "path": path_str,
-                                        "category": violation.category,
-                                        "description": violation.description
-                                    }),
-                                );
-                                return block_response(
-                                    &violation.category,
-                                    "response_pii_leak",
-                                    &format!(
-                                        "Response contains prohibited data: {}",
-                                        violation.description
-                                    ),
-                                );
+                // Skip DLP for streaming responses — they are passed through directly
+                if !is_streaming {
+                    let body = res.body_mut();
+                    if let Ok(body_bytes) = axum::body::to_bytes(
+                        std::mem::replace(body, axum::body::Body::empty()),
+                        usize::MAX,
+                    )
+                    .await
+                    {
+                        if let Ok(body_text) = String::from_utf8(body_bytes.to_vec()) {
+                            if let Some(violation) =
+                                check_for_violations(&body_text, Some(&state.dlp_config))
+                            {
+                                if state.dlp_action == DlpAction::Block {
+                                    banner::print_warning(&format!(
+                                        "Response DLP BLOCKED: {} leak detected in response from {}",
+                                        violation.description, path_str
+                                    ));
+                                    log_security_event(
+                                        state.audit_log_path.clone(),
+                                        serde_json::json!({
+                                            "timestamp": Utc::now().to_rfc3339(),
+                                            "event": "response_dlp_blocked",
+                                            "path": path_str,
+                                            "category": violation.category,
+                                            "description": violation.description
+                                        }),
+                                    );
+                                    return block_response(
+                                        &violation.category,
+                                        "response_pii_leak",
+                                        &format!(
+                                            "Response contains prohibited data: {}",
+                                            violation.description
+                                        ),
+                                    );
+                                }
                             }
                         }
                     }

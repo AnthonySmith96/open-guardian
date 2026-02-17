@@ -51,6 +51,10 @@ enum Commands {
         /// Enable detailed request logging
         #[arg(short, long)]
         verbose: bool,
+
+        /// Skip rule file integrity checks (dev mode)
+        #[arg(long, alias = "dev")]
+        skip_integrity: bool,
     },
     /// Scan for insecure configurations (The Inspector)
     Audit {
@@ -213,6 +217,7 @@ fn windows_service_main(_arguments: Vec<std::ffi::OsString>) {
                 upstream: None,
                 local: false,
                 verbose: true,
+                skip_integrity: false,
             },
             shutdown_token,
         )
@@ -301,6 +306,7 @@ async fn run_app(
             upstream,
             local,
             verbose,
+            skip_integrity,
         } => {
             let file_config = config::load_config();
 
@@ -372,6 +378,7 @@ async fn run_app(
                 verbose,
                 policies,
                 dlp_config,
+                skip_integrity,
             };
 
             tracing::info!("Server starting on port {}", port);
