@@ -25,6 +25,15 @@ pub struct SecurityConfig {
     pub block_threshold: Option<u32>,
     pub policies: Option<PolicyConfig>,
     pub dlp: Option<DlpConfig>,
+    /// Whether to allow non-JSON requests to pass through (default: false for security)
+    #[serde(default = "SecurityConfig::default_allow_non_json")]
+    pub allow_non_json_passthrough: bool,
+}
+
+impl SecurityConfig {
+    fn default_allow_non_json() -> bool {
+        false // SECURITY: Default-deny non-JSON to prevent bypasses
+    }
 }
 
 /// Per-category DLP toggle switches.

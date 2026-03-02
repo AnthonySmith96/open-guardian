@@ -33,6 +33,8 @@ pub struct ServerConfig {
     pub dlp_config: crate::config::DlpConfig,
     /// Optional Semantic Load Balancer config.
     pub load_balancer: Option<crate::config::LoadBalancerConfig>,
+    /// Security configuration for hardening options.
+    pub security: Option<crate::config::SecurityConfig>,
 }
 
 #[derive(Clone)]
@@ -54,6 +56,8 @@ struct AppState {
     dlp_config: crate::config::DlpConfig,
     /// Semantic Load Balancer config (None = disabled).
     slb_config: Option<crate::config::LoadBalancerConfig>,
+    /// Security config for non-JSON handling and other security policies
+    security_config: crate::config::SecurityConfig,
 }
 
 async fn health_handler() -> impl IntoResponse {
@@ -136,6 +140,7 @@ pub async fn start_server(
         dlp_action,
         dlp_config: config.dlp_config.clone(),
         slb_config: config.load_balancer,
+        security_config: config.security.clone().unwrap_or_default(),
     };
 
     let app = Router::new()
@@ -780,7 +785,51 @@ async fn handler(
         }
         response
     } else {
-        // Non-JSON passthrough
+        // ════════════════════════════════════════════════════
+        // SECURITY FIX C1: Non-JSON Request Handling
+        // Default-deny non-JSON to prevent security bypasses.
+        // If allowed via config, still apply raw byte DLP scanning.
+        // ════════════════════════════════════════════════════
+
+        if !state.security_config.allow_non_json_passthrough {
+            // SECURITY: Default-deny non-JSON requests
+            banner::print_blocking(&format!(
+                "Non-JSON request to {}: BLOCKED (security policy)",
+                path_str
+            ));
+            tracing::warn!(
+                "SECURITY: Non-JSON request blocked. Set allow_non_json_passthrough=true to allow (not recommended)."
+            );
+            return block_response(
+                "security_policy",
+                "non_json_not_allowed",
+                "Non-JSON requests are blocked by security policy. Please use application/json Content-Type.",
+            );
+        }
+
+        // Passthrough mode enabled (explicit opt-in, NOT recommended for security)
+        banner::print_warning(&format!(
+            "Non-JSON passthrough enabled (SECURITY RISK): {}",
+            path_str
+        ));
+        tracing::warn!("SECURITY: Non-JSON passthrough enabled — security checks bypassed!");
+
+        // Even in passthrough mode, attempt basic DLP on raw bytes
+        let body_str = String::from_utf8_lossy(&body);
+        if let Some(violation) = check_for_violations(&body_str, Some(&state.dlp_config)) {
+            banner::print_warning(&format!(
+                "DLP violation detected in non-JSON body to {}",
+                path_str
+            ));
+            if state.dlp_action == DlpAction::Block {
+                return block_response(
+                    &violation.category,
+                    "dlp_violation",
+                    &format!("Access Denied: {}", violation.description),
+                );
+            }
+        }
+
         let upstream_url = state.default_upstream.clone();
         let response = match state
             .proxy
@@ -815,7 +864,7 @@ async fn handler(
 
         if state.verbose {
             banner::print_warning(&format!(
-                "Non-JSON request to {}: Skipping security logic.",
+                "Non-JSON passthrough to {}: SECURITY BYPASSED",
                 path_str
             ));
             println!(

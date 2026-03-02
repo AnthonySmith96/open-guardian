@@ -2,6 +2,7 @@ mod audit;
 mod banner;
 mod config;
 mod logger;
+mod pipeline;
 mod proxy;
 mod router;
 mod security;
@@ -380,6 +381,7 @@ async fn run_app(
                 policies,
                 dlp_config,
                 load_balancer: file_config.load_balancer,
+                security: file_config.security.clone(),
             };
 
             tracing::info!("Server starting on port {}", port);

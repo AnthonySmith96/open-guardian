@@ -254,11 +254,60 @@ impl ThreatEngine {
         }
     }
 
-    fn is_whitelisted(&self, raw_input: &str) -> bool {
+    fn is_whitelisted(&self, raw_input: &str) -> Vec<String> {
+        // SECURITY FIX C8: Changed from substring contains to anchored matching
+        // Old: "git pull" in "git pull && rm -rf /" → true (WRONG!)
+        // New: Only match complete patterns or bounded words
         let lower = raw_input.to_lowercase();
-        self.allowed_patterns
-            .iter()
-            .any(|p| lower.contains(&p.to_lowercase()))
+        let mut matches = Vec::new();
+
+        for pattern in &self.allowed_patterns {
+            let pattern_lower = pattern.to_lowercase();
+            // Use word boundary matching: pattern must be surrounded by whitespace,
+            // punctuation, or string boundaries
+            if Self::pattern_matches_bounded(&lower, &pattern_lower) {
+                matches.push(pattern.clone());
+            }
+        }
+
+        matches
+    }
+
+    /// Check if pattern matches in a bounded way (not just substring)
+    fn pattern_matches_bounded(input: &str, pattern: &str) -> bool {
+        if input == pattern {
+            return true; // Exact match
+        }
+
+        // Check if pattern appears with word boundaries
+        // Pattern must be preceded by whitespace/punctuation or start of string
+        // AND followed by whitespace/punctuation or end of string
+        let pattern_len = pattern.len();
+        let positions: Vec<usize> = input.match_indices(pattern).map(|(i, _)| i).collect();
+
+        for pos in positions {
+            let before = if pos == 0 {
+                ' ' // Start of string treated as boundary
+            } else {
+                input.chars().nth(pos.saturating_sub(1)).unwrap_or(' ')
+            };
+
+            let after_pos = pos + pattern_len;
+            let after = if after_pos >= input.len() {
+                ' ' // End of string treated as boundary
+            } else {
+                input.chars().nth(after_pos).unwrap_or(' ')
+            };
+
+            // Both must be word boundaries (whitespace or punctuation)
+            let is_boundary = |c: char| c.is_whitespace() || c.is_ascii_punctuation();
+
+            if is_boundary(before) && is_boundary(after) {
+                return true;
+            }
+        }
+
+        false
     }
 
     /// Primary Scan Function.
@@ -267,14 +316,13 @@ impl ThreatEngine {
     /// - `blocked = true` if any signature with severity >= 90 matches
     /// - `risk_tags` for severity 50-89 matches (Tag & Audit)
     /// - `max_severity` across all matches
+    ///
+    /// SECURITY FIX C8: Whitelist no longer fully bypasses scanning.
+    /// Whitelisted patterns reduce severity but don't prevent blocking for
+    /// high-severity threats. Prevents bypass like "git pull && rm -rf /".
     pub fn check(&self, raw_input: &str) -> ScanResult {
-        if self.is_whitelisted(raw_input) {
-            return ScanResult {
-                blocked: false,
-                risk_tags: vec![],
-                max_severity: 0,
-            };
-        }
+        let whitelist_matches = self.is_whitelisted(raw_input);
+        let whitelisted = !whitelist_matches.is_empty();
 
         let normalized = normalizer::normalize(raw_input);
         // Get the normalized string content
@@ -296,14 +344,23 @@ impl ThreatEngine {
             };
 
             if matched {
-                if sig.severity > max_severity {
-                    max_severity = sig.severity;
+                // SECURITY FIX C8: Whitelist reduces severity but doesn't fully bypass
+                // For whitelisted patterns: cap severity at 89 (won't auto-block)
+                // But severity 100 (critical) still blocks regardless of whitelist
+                let effective_severity = if whitelisted && sig.severity < 100 {
+                    sig.severity.saturating_sub(20).min(89)
+                } else {
+                    sig.severity
+                };
+
+                if effective_severity > max_severity {
+                    max_severity = effective_severity;
                 }
 
-                if sig.severity >= 90 {
+                if effective_severity >= 90 {
                     blocked = true;
                     risk_tags.push(format!("BLOCK:{}", sig.category));
-                } else if sig.severity >= 50 {
+                } else if effective_severity >= 50 {
                     risk_tags.push(sig.category.clone());
                 }
             }

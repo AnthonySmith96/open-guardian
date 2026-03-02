@@ -100,3 +100,13 @@ pub fn print_error(msg: &str) {
     println!(" {} {}", "✘".bright_red().bold(), msg);
     tracing::error!("ERROR: {}", msg);
 }
+
+pub fn print_info(msg: &str) {
+    println!(" {} {}", "→".bright_cyan(), msg);
+    tracing::info!("{}", msg);
+}
+
+pub fn print_blocking(msg: &str) {
+    println!(" {} {}", "🛡".bright_red().bold(), msg);
+    tracing::warn!("BLOCKED: {}", msg);
+}

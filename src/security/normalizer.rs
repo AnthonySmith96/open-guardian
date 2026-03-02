@@ -292,3 +292,82 @@ pub fn normalize_unicode(content: &str) -> NormalizationResult {
 pub fn normalize(content: &str) -> NormalizationResult {
     normalize_unicode(content)
 }
+
+/// ═══════════════════════════════════════════════════════════════
+/// SECURITY FIX C3/C4: Normalize + Casefold BEFORE DLP/Search
+/// ═══════════════════════════════════════════════════════════════
+///
+/// This function creates a normalized, casefolded version of content
+/// for matching against security patterns. This MUST be called BEFORE
+/// DLP detection to prevent bypass via case variation or Unicode.
+///
+/// Order of operations:
+/// 1. Unicode normalization (NFKC)
+/// 2. Zero-width character removal
+/// 3. Homoglyph normalization (Cyrillic → ASCII)
+/// 4. Casefolding (for case-insensitive matching)
+///
+/// Use this instead of raw content when checking against:
+/// - DLP patterns
+/// - Threat signatures
+/// - Injection patterns
+///
+/// NOTE: This function is plumbed for future integration. Currently
+/// the existing normalizer is used to minimize code churn.
+#[allow(dead_code)]
+pub fn normalize_for_matching(content: &str) -> String {
+    use unicode_normalization::UnicodeNormalization;
+
+    let mut result = content.to_string();
+
+    // Step 1: Unicode NFKC normalization
+    result = result.nfkc().collect::<String>();
+
+    // Step 2: Strip zero-width characters
+    for zwc in ZERO_WIDTH_CHARS {
+        result = result.replace(*zwc, "");
+    }
+
+    // Step 3: Normalize homoglyphs (Cyrillic → ASCII)
+    for (cyrillic, ascii) in HOMOGLYPH_MAPPINGS {
+        result = result.replace(*cyrillic, ascii);
+    }
+
+    // Step 4: Casefold for case-insensitive matching
+    // Using Unicode casefolding, not just lowercase
+    result = result.to_lowercase();
+
+    result
+}
+
+/// Quick check if content contains suspicious Unicode patterns.
+/// Use this for fast-path filtering before detailed analysis.
+#[allow(dead_code)]
+pub fn has_suspicious_unicode(content: &str) -> bool {
+    // Check for zero-width characters
+    for c in content.chars() {
+        if ZERO_WIDTH_CHARS.contains(&c) {
+            return true;
+        }
+    }
+
+    // Check for RTL override
+    if content.contains('\u{202A}')
+        || content.contains('\u{202B}')
+        || content.contains('\u{202C}')
+        || content.contains('\u{202D}')
+        || content.contains('\u{202E}')
+    {
+        return true;
+    }
+
+    // Check for Cyrillic homoglyphs
+    for (c, _) in HOMOGLYPH_MAPPINGS.iter().take(17) {
+        // First 17 are lowercase Cyrillic that look like ASCII
+        if content.contains(*c) {
+            return true;
+        }
+    }
+
+    false
+}

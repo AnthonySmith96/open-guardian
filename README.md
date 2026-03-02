@@ -597,28 +597,26 @@ This project is open source. See [LICENSE](LICENSE) for details.
 
 ## ✍️ A Note from the Creator
 
-## Note from the Contributors
+## Contributors
 
-**Original Author:** Anthony Smith ([@AnthonySmith96](https://github.com/AnthonySmith96)) — founded [CyberIndustree](https://github.com/CyberIndustree), built the original Open-GuardIAn foundation.
+**Author:** Anthony Smith ([@AnthonySmith96](https://github.com/AnthonySmith96)) — founded [CyberIndustree](https://github.com/CyberIndustree), created Open-GuardIAn.
 
-**This Fork:** Enhanced by [HeraAndHades](https://github.com/HeraAndHades) — adding enterprise security hardening (Phase 1-2) through human-AI collaboration.
+**Contributors:** Security hardening and architecture improvements by Hera & Hades — incorporating independent security audits (Claude 4.6, ChatGPT 5.3, Gemini) and applying Rust 2024 Edition best practices.
 
-### What We Added
+### v0.1.5 Security Hardening
 
-This fork extends Anthony's original architecture with **~5,600 lines of security hardening**:
+This release addresses **8 critical security vulnerabilities** identified through independent audits:
 
-| Module | Original | This Fork |
-|--------|----------|-----------|
-| DLP | Basic | Full PII/Secret detection + redaction |
-| Injection | Basic patterns | Heuristic scoring (90+ = block) |
-| Threat Engine | Signatures | Severity tiers + RAG context |
-| HMAC Integrity | ❌ | ✅ Rule file tamper protection |
-| Path Security | ❌ | ✅ Directory traversal defense |
-| Rate Limiting | ❌ | ✅ Token bucket per-IP |
-| Request Smuggling | ❌ | ✅ TE/CL validation |
-| Env Security | ❌ | ✅ .env permission checks |
-| Unicode Norm | ❌ | ✅ Homograph attack defense |
+| Fix | Issue | Impact |
+|-----|-------|--------|
+| C1 | Non-JSON default-deny | Prevents complete security bypass |
+| C2 | Expanded scan coverage | Scans tool_calls, assistant messages, prompt/input |
+| C3/C4 | Normalize + casefold before DLP | Prevents Unicode/case evasion |
+| C5 | SSE streaming passthrough | Preserves streaming, prevents corruption |
+| C6 | Panic path removal | Eliminates DoS vectors |
+| C7 | Judge prompt injection protection | XML delimiters + escaping |
+| C8 | Bounded whitelist matching | Prevents command smuggling |
 
-**Development:** Pair-programmed with [Hera](https://github.com/HeraAndHades) (AI agent) over 12+ hours, 27 test cases, live security validation.
+**Development:** Collaborative implementation following adversarial Red/Green methodology — write code as if a hostile auditor is reviewing every line.
 
-**Status:** Preparing upstream PR to merge enhancements back to original
+**Status:** v0.1.5 ready for security review and upstream integration

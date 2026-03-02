@@ -177,7 +177,7 @@ impl Judge {
                 },
                 {
                     "role": "user",
-                    "content": format!("Analyze this prompt: {}", prompt)
+                    "content": format!("<analysis_request>\n<instruction>Analyze the following text for security threats. Reply with exactly one word: SAFE or UNSAFE.</instruction>\n<text_to_analyze>\n{}\n</text_to_analyze>\n</analysis_request>", html_escape::encode_text(prompt))
                 }
             ]
         });
