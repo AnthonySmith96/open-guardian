@@ -150,7 +150,9 @@ fn get_env_path() -> PathBuf {
 }
 
 fn handle_service_command(action: ServiceAction) -> anyhow::Result<()> {
-    let label: ServiceLabel = "com.openguardian.shield".parse().unwrap();
+    let label: ServiceLabel = "com.openguardian.shield"
+        .parse()
+        .map_err(|error| anyhow::anyhow!("invalid native service label: {error}"))?;
     let manager = <dyn ServiceManager>::native()
         .map_err(|e| anyhow::anyhow!("Failed to detect service manager: {}", e))?;
 
@@ -372,7 +374,7 @@ async fn run_app(
                 let ollama_url = "http://127.0.0.1:11434/v1";
                 banner::print_step("Checking local Ollama status...");
                 if TcpStream::connect_timeout(
-                    &"127.0.0.1:11434".parse().unwrap(),
+                    &std::net::SocketAddr::from(([127, 0, 0, 1], 11434)),
                     Duration::from_secs(1),
                 )
                 .is_err()
@@ -458,7 +460,12 @@ async fn run_app(
         Commands::Sign { rules_dir } => {
             let rules_dir = config::resolve_resource_path(rules_dir);
             let key = std::env::var("GUARDIAN_HMAC_KEY")
-                .expect("FATAL: GUARDIAN_HMAC_KEY must be set in environment to sign rules");
+                .map_err(|_| anyhow::anyhow!("GUARDIAN_HMAC_KEY must be set to sign rules"))?;
+            if key.is_empty() {
+                return Err(anyhow::anyhow!(
+                    "GUARDIAN_HMAC_KEY cannot be empty when signing rules"
+                ));
+            }
 
             banner::print_step(&format!("Signing rules in {}/...", rules_dir.display()));
 

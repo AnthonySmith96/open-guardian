@@ -12,6 +12,7 @@
 - Buffer all responses, including SSE, to a 16 MiB inspection limit before release.
 - Reject non-UTF-8 upstream bodies that cannot pass text DLP, and stop appending a newline to provider responses.
 - Make `block` and `redact` cover the same secret, bearer-token, phone, and IPv4 detector categories.
+- Return normal CLI errors instead of panicking on invalid service metadata or missing/empty rule-signing keys.
 - Resolve configuration/rule resources predictably and fail on malformed discovered configuration.
 - Make HMAC rule integrity opt-in for fresh installs but fail closed once a key or manifest establishes the contract.
 - Commit `Cargo.lock` for reproducible binary dependency resolution.
