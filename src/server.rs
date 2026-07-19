@@ -4,7 +4,7 @@ use crate::pipeline::{extract_scan_targets, replace_scan_target};
 use crate::proxy::ProxyClient;
 use crate::secrets::{EnvironmentBackend, SecretBroker, SecretRef};
 use crate::security::{
-    analyze_injection, check_for_violations, redact_pii, DlpAction, Judge, ThreatEngine,
+    analyze_injection, check_for_violations, DlpAction, Judge, RedactionSession, ThreatEngine,
 };
 use axum::{
     body::Bytes,
@@ -344,6 +344,7 @@ async fn handler(
 
     // ── Parse JSON body ──
     if let Ok(mut json_body) = serde_json::from_slice::<Value>(&body) {
+        let mut redaction_session = RedactionSession::new();
         let model_alias = json_body
             .get("model")
             .and_then(|m| m.as_str())
@@ -437,7 +438,7 @@ async fn handler(
                 }
 
                 // Redaction Process
-                let cleaned = redact_pii(&content_text, Some(&state.dlp_config));
+                let cleaned = redaction_session.redact(&content_text, Some(&state.dlp_config));
                 if state.verbose {
                     println!(
                         "   {} DLP redact check: {:?}",
@@ -715,6 +716,7 @@ async fn handler(
                 body: final_body,
                 dlp_config: Some(&state.dlp_config),
                 dlp_action: state.dlp_action,
+                redactions: redaction_session,
             })
             .await
         {
@@ -793,8 +795,17 @@ async fn handler(
         tracing::warn!("SECURITY: Non-JSON passthrough enabled — security checks bypassed!");
 
         // Even in passthrough mode, attempt basic DLP on raw bytes
-        let body_str = String::from_utf8_lossy(&body);
-        if let Some(violation) = check_for_violations(&body_str, Some(&state.dlp_config)) {
+        let body_str = match std::str::from_utf8(&body) {
+            Ok(body) => body,
+            Err(_) => {
+                return block_response(
+                    "security_policy",
+                    "non_json_not_utf8",
+                    "Non-JSON request cannot be safely inspected as UTF-8",
+                );
+            }
+        };
+        if let Some(violation) = check_for_violations(body_str, Some(&state.dlp_config)) {
             banner::print_warning(&format!(
                 "DLP violation detected in non-JSON body to {}",
                 path_str
@@ -808,6 +819,9 @@ async fn handler(
             }
         }
 
+        let mut redaction_session = RedactionSession::new();
+        let redacted_body = redaction_session.redact(body_str, Some(&state.dlp_config));
+
         let upstream_url = state.default_upstream.clone();
         let response = match state
             .proxy
@@ -817,9 +831,10 @@ async fn handler(
                 method,
                 path: &path_str,
                 headers,
-                body,
+                body: Bytes::from(redacted_body),
                 dlp_config: Some(&state.dlp_config),
                 dlp_action: state.dlp_action,
+                redactions: redaction_session,
             })
             .await
         {

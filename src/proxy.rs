@@ -1,7 +1,7 @@
 use crate::banner;
 use crate::config::DlpConfig;
 use crate::secrets::{SecretBroker, SecretRef};
-use crate::security::{check_for_violations, redact_pii, DlpAction};
+use crate::security::{check_for_violations, redact_pii, DlpAction, RedactionSession};
 use anyhow::{Context, Result};
 use axum::response::IntoResponse;
 use futures_util::StreamExt;
@@ -69,6 +69,7 @@ pub struct ForwardOptions<'a> {
     pub body: axum::body::Bytes,
     pub dlp_config: Option<&'a DlpConfig>,
     pub dlp_action: DlpAction,
+    pub redactions: RedactionSession,
 }
 
 #[derive(Clone)]
@@ -103,6 +104,7 @@ impl ProxyClient {
             body,
             dlp_config,
             dlp_action,
+            redactions,
         } = opts;
         let base_url = upstream_url;
         let mut target_path = path;
@@ -262,7 +264,14 @@ impl ProxyClient {
                     target_path
                 ));
                 tracing::info!("DLP: Redacted response from {}", target_path);
-                body_final = redacted_text.into_bytes();
+            }
+            let restored_text = redactions.restore(&redacted_text);
+            if restored_text != body_text {
+                tracing::info!(
+                    "DLP: restored {} request-scoped placeholder(s) locally",
+                    redactions.redaction_count()
+                );
+                body_final = restored_text.into_bytes();
             }
         }
 
@@ -379,11 +388,54 @@ mod tests {
                 body: axum::body::Bytes::from_static(b"{}"),
                 dlp_config: None,
                 dlp_action: crate::security::DlpAction::Redact,
+                redactions: crate::security::RedactionSession::new(),
             })
             .await
             .expect("forward request");
 
         assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn request_placeholders_are_restored_only_after_upstream_returns() {
+        let app = Router::new().route("/echo", any(|body: String| async move { body }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test server");
+        let address = listener.local_addr().expect("test address");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("serve test request");
+        });
+
+        let broker = SecretBroker::new();
+        let proxy = super::ProxyClient::new(5, Arc::new(broker)).expect("proxy client");
+        let original = "Deploy to 192.168.10.25";
+        let mut redactions = crate::security::RedactionSession::new();
+        let protected = redactions.redact(original, None);
+        assert!(!protected.contains("192.168.10.25"));
+
+        let response = proxy
+            .forward_request(super::ForwardOptions {
+                upstream_url: &format!("http://{address}"),
+                credential: None,
+                method: axum::http::Method::POST,
+                path: "/echo",
+                headers: axum::http::HeaderMap::new(),
+                body: axum::body::Bytes::from(protected),
+                dlp_config: None,
+                dlp_action: crate::security::DlpAction::Redact,
+                redactions,
+            })
+            .await
+            .expect("forward request");
+        let response_body = axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .expect("read response");
+
+        assert_eq!(String::from_utf8_lossy(&response_body).trim(), original);
         server.abort();
     }
 }

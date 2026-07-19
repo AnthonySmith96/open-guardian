@@ -1,6 +1,9 @@
 use crate::config::DlpConfig;
+use rand::{rngs::OsRng, RngCore};
 use regex::Regex;
+use std::fmt;
 use std::sync::OnceLock;
+use zeroize::Zeroizing;
 
 // ── PII Patterns ──
 static EMAIL_REGEX: OnceLock<Regex> = OnceLock::new();
@@ -42,6 +45,119 @@ impl DlpAction {
 pub struct DlpViolation {
     pub category: String,
     pub description: String,
+}
+
+struct RedactedValue {
+    token: String,
+    value: Zeroizing<String>,
+}
+
+/// Per-request reversible redaction map. Values live only until the upstream
+/// response is reconstructed and are zeroized when the session is dropped.
+pub struct RedactionSession {
+    nonce: String,
+    values: Vec<RedactedValue>,
+}
+
+impl RedactionSession {
+    pub fn new() -> Self {
+        let mut nonce = [0_u8; 16];
+        OsRng.fill_bytes(&mut nonce);
+        Self {
+            nonce: hex::encode(nonce),
+            values: Vec::new(),
+        }
+    }
+
+    /// Replaces sensitive values with opaque, request-scoped tokens.
+    pub fn redact(&mut self, content: &str, config: Option<&DlpConfig>) -> String {
+        let mut redacted = content.to_string();
+        let secret_enabled = config.map(|c| c.secret_redaction).unwrap_or(true);
+        let email_enabled = config.map(|c| c.email_redaction).unwrap_or(true);
+        let ssn_enabled = config.map(|c| c.ssn_redaction).unwrap_or(true);
+        let cc_enabled = config.map(|c| c.credit_card_redaction).unwrap_or(true);
+        let phone_enabled = config.map(|c| c.phone_redaction).unwrap_or(true);
+        let ip_enabled = config.map(|c| c.ip_redaction).unwrap_or(true);
+
+        if secret_enabled {
+            redacted = self.redact_matches(redacted, openai_proj_re(), "KEY");
+            redacted = self.redact_matches(redacted, aws_re(), "AWS_KEY");
+            redacted = self.redact_matches(redacted, github_re(), "GITHUB_TOKEN");
+            redacted = self.redact_matches(redacted, openai_re(), "KEY");
+            redacted = self.redact_matches(redacted, groq_re(), "KEY");
+            redacted = self.redact_matches(redacted, slack_re(), "SLACK_TOKEN");
+            redacted = self.redact_matches(redacted, generic_re(), "SECRET");
+            redacted = self.redact_matches(redacted, bearer_re(), "BEARER");
+        }
+        if ssn_enabled {
+            redacted = self.redact_matches(redacted, ssn_re(), "SSN");
+        }
+        if email_enabled {
+            redacted = self.redact_matches(redacted, email_re(), "EMAIL");
+        }
+        if cc_enabled {
+            redacted = self.redact_matches(redacted, cc_re(), "CC");
+        }
+        if phone_enabled {
+            redacted = self.redact_matches(redacted, phone_re(), "PHONE");
+        }
+        if ip_enabled {
+            redacted = self.redact_matches(redacted, ipv4_re(), "IP");
+        }
+
+        redacted
+    }
+
+    /// Restores only tokens minted by this request. Fabricated or replayed
+    /// tokens from another request remain inert.
+    pub fn restore(&self, content: &str) -> String {
+        let mut restored = content.to_string();
+        for entry in &self.values {
+            restored = restored.replace(&entry.token, entry.value.as_str());
+        }
+        restored
+    }
+
+    pub fn redaction_count(&self) -> usize {
+        self.values.len()
+    }
+
+    fn redact_matches(&mut self, input: String, pattern: &Regex, category: &str) -> String {
+        pattern
+            .replace_all(&input, |captures: &regex::Captures<'_>| {
+                self.store(&captures[0], category)
+            })
+            .into_owned()
+    }
+
+    fn store(&mut self, value: &str, category: &str) -> String {
+        let token = format!(
+            "[[GUARDIAN_REDACTED:{}:{}:{}]]",
+            self.nonce,
+            self.values.len(),
+            category
+        );
+        self.values.push(RedactedValue {
+            token: token.clone(),
+            value: Zeroizing::new(value.to_string()),
+        });
+        token
+    }
+}
+
+impl Default for RedactionSession {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl fmt::Debug for RedactionSession {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RedactionSession")
+            .field("redaction_count", &self.values.len())
+            .finish_non_exhaustive()
+    }
 }
 
 // ── Helper: compile all regex patterns lazily ──
@@ -324,5 +440,36 @@ mod tests {
         let result = redact_pii(input, Some(&config));
         assert!(result.contains("test@test.com"));
         assert!(result.contains("<KEY>"));
+    }
+
+    #[test]
+    fn reversible_redaction_round_trips_operational_data() {
+        let input = "Connect to 192.168.1.100 as admin@example.com";
+        let mut session = RedactionSession::new();
+
+        let redacted = session.redact(input, None);
+
+        assert!(!redacted.contains("192.168.1.100"));
+        assert!(!redacted.contains("admin@example.com"));
+        assert_eq!(session.redaction_count(), 2);
+        assert_eq!(session.restore(&redacted), input);
+    }
+
+    #[test]
+    fn session_does_not_restore_foreign_tokens() {
+        let session = RedactionSession::new();
+        let fabricated = "[[GUARDIAN_REDACTED:foreign:0:KEY]]";
+
+        assert_eq!(session.restore(fabricated), fabricated);
+    }
+
+    #[test]
+    fn session_debug_never_contains_values_or_nonce() {
+        let mut session = RedactionSession::new();
+        let _ = session.redact("admin@example.com", None);
+        let debug = format!("{session:?}");
+
+        assert_eq!(debug, "RedactionSession { redaction_count: 1, .. }");
+        assert!(!debug.contains("admin@example.com"));
     }
 }

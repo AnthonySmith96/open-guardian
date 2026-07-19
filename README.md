@@ -70,7 +70,7 @@ Keep the same `GUARDIAN_HMAC_KEY` available at startup. Do not commit it or the 
 
 #### Layer 1: DLP Anonymizer — "The Iron Dome" (CPU — Sub-millisecond — Always On)
 
-The DLP layer is the first line of defense. It scans every request for sensitive data and replaces it with **context-preserving anonymizer tokens** that let AI agents understand what type of data was present without exposing the actual values.
+The DLP layer is the first line of defense. In `redact` mode, request values become unpredictable, request-scoped placeholders. Their mapping exists only in memory and is zeroized after the response. If the provider echoes a placeholder, Open-Guardian restores the original locally after the complete response passes DLP. A provider-generated sensitive value that was not part of the request remains redacted.
 
 | Data Type | Pattern | Anonymizer Token |
 |-----------|---------|------------------|
@@ -86,6 +86,8 @@ The DLP layer is the first line of defense. It scans every request for sensitive
 | Phone | `+1-555-123-4567` | `<PHONE>` |
 | Bearer Token | `Bearer eyJ...` | `<BEARER>` |
 | Generic Secret | `api_key=abc123...` | `<SECRET>` |
+
+The labels above describe the category preserved for the model; request tokens also contain a random per-request nonce and index. Tokens from another request—or fabricated by a model—cannot resolve in the current session.
 
 Each category can be individually toggled on/off via `guardian.toml`:
 
