@@ -155,15 +155,13 @@ impl Default for PolicyConfig {
 pub enum PolicyAction {
     Block,
     Audit,
-    Redact,
     Allow,
 }
 
 impl PolicyAction {
     pub fn from_str(s: &str) -> Self {
         match s.to_lowercase().as_str() {
-            "audit" => PolicyAction::Audit,
-            "redact" => PolicyAction::Redact,
+            "audit" | "redact" => PolicyAction::Audit,
             "allow" => PolicyAction::Allow,
             _ => PolicyAction::Block, // secure default
         }
@@ -422,6 +420,10 @@ mod tests {
         assert_eq!(
             super::PolicyAction::from_str("invalid-policy"),
             super::PolicyAction::Block
+        );
+        assert_eq!(
+            super::PolicyAction::from_str("redact"),
+            super::PolicyAction::Audit
         );
     }
 }
