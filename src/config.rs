@@ -1,5 +1,5 @@
 use crate::banner;
-use crate::secrets::{EnvironmentBackend, SecretRef};
+use open_guardian::secrets::{EnvironmentBackend, SecretRef};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::fs;

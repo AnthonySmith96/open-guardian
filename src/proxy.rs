@@ -1,11 +1,11 @@
 use crate::banner;
 use crate::config::DlpConfig;
-use crate::secrets::{SecretBroker, SecretRef};
 use crate::security::{check_for_violations, redact_pii, DlpAction, RedactionSession};
 use anyhow::{Context, Result};
 use axum::response::IntoResponse;
 use futures_util::StreamExt;
 use http::{HeaderMap, Method, StatusCode};
+use open_guardian::secrets::{SecretBroker, SecretRef};
 use reqwest::Client;
 use std::sync::Arc;
 use std::time::Duration;
@@ -300,9 +300,11 @@ impl ProxyClient {
 #[cfg(test)]
 mod tests {
     use super::{append_response_chunk, build_bearer_header};
-    use crate::secrets::{SecretBackend, SecretBroker, SecretError, SecretRef, SecretValue};
     use async_trait::async_trait;
     use axum::{http::StatusCode, routing::any, Router};
+    use open_guardian::secrets::{
+        SecretBackend, SecretBroker, SecretError, SecretRef, SecretValue,
+    };
     use std::sync::Arc;
 
     struct FixedCredentialBackend;

@@ -2,7 +2,6 @@ use crate::banner;
 use crate::config::{JudgeConfig, PolicyAction, PolicyConfig, RouteConfig};
 use crate::pipeline::{extract_scan_targets, replace_scan_target};
 use crate::proxy::ProxyClient;
-use crate::secrets::{EnvironmentBackend, SecretBroker, SecretRef};
 use crate::security::{
     analyze_injection, check_for_violations, DlpAction, Judge, RedactionSession, ThreatEngine,
 };
@@ -16,6 +15,7 @@ use axum::{
 };
 use chrono::Utc;
 use colored::Colorize;
+use open_guardian::secrets::{EnvironmentBackend, SecretBroker, SecretRef};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::net::SocketAddr;

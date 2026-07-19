@@ -6,7 +6,7 @@
 //! The score is computed in microseconds — no LLM calls, no network, no latency overhead.
 
 use crate::config::LoadBalancerConfig;
-use crate::secrets::SecretRef;
+use open_guardian::secrets::SecretRef;
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Routing Tier

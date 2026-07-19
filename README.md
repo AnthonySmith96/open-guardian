@@ -219,6 +219,8 @@ Client applications **do not** receive provider API keys.
 
 The `env://` backend supports headless deployments and migration from `key_env`. Platform keychains and the portable encrypted vault will use the same backend contract; do not place a literal API key in `guardian.toml`.
 
+`SecretRef`, `SecretBroker`, `SecretBackend`, and `SecretValue` are also exported by the Rust library target (`open_guardian::secrets`) so local applications can reuse the broker without starting the proxy.
+
 ### 🏷️ Model Aliasing
 You can define custom model names (aliases) that map to specific provider versions. This allows you to swap underlying models without changing application code.
 
