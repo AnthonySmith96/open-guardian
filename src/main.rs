@@ -338,7 +338,7 @@ async fn run_app(
                         .server
                         .as_ref()
                         .and_then(|s| s.default_upstream.clone()))
-                    .unwrap_or_else(|| "https://api.openai.com/v1".to_string())
+                    .unwrap_or_else(|| "http://127.0.0.1:11434/v1".to_string())
             };
 
             let port = port

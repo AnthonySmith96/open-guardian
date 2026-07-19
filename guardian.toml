@@ -1,15 +1,15 @@
 # ==========================================
 # OPEN-GUARDIAN CONFIGURATION
 # "Secure by Default, Configurable by Choice."
-# Open-Guardian v0.1.4
+# Open-Guardian v0.2 development profile
 # ==========================================
 
 [server]
 # Loopback-only by default. Set to "0.0.0.0" only when network exposure is intentional.
 bind_address = "127.0.0.1"
 port = 8080
-# Default upstream for requests that don't match a specific route
-default_upstream = "https://api.groq.com/openai"
+# Privacy default: unmatched models remain on the local Ollama-compatible endpoint.
+default_upstream = "http://127.0.0.1:11434/v1"
 
 # RATE LIMITING (Cost & Resource Protection)
 # Maximum global requests per minute
@@ -57,7 +57,8 @@ dlp_action = "redact"
 [[security.dictionaries]]
 id = "common"
 path = "rules/common.json"
-enabled = true
+# Explicit opt-in: enabling this example sends prompts to external providers.
+enabled = false
 
 [[security.dictionaries]]
 id = "jailbreaks_en"
