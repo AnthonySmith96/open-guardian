@@ -11,9 +11,14 @@ mod server;
 use crate::server::ServerConfig;
 use clap::{Parser, Subcommand};
 use service_manager::*;
+#[cfg(windows)]
+use std::io::IsTerminal;
 use std::net::TcpStream;
 use std::path::PathBuf;
 use std::time::Duration;
+
+#[cfg(feature = "native-keyring")]
+use open_guardian::secrets::{KeychainAdmin, SecretRef, SecretValue};
 
 #[cfg(windows)]
 use windows_service::{
@@ -29,6 +34,7 @@ use windows_service::{
 #[derive(Parser)]
 #[command(name = "open-guardian")]
 #[command(about = "The Shield for the Age of AI Agents", long_about = None)]
+#[command(version)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -38,6 +44,10 @@ struct Cli {
 enum Commands {
     /// Start the Open-GuardIAn Proxy (The Shield)
     Start {
+        /// IP address to listen on (defaults to loopback only)
+        #[arg(long)]
+        bind: Option<String>,
+
         /// Port to listen on
         #[arg(short, long)]
         port: Option<u16>,
@@ -71,6 +81,12 @@ enum Commands {
         #[command(subcommand)]
         action: ServiceAction,
     },
+    /// Provision credentials in Open-Guardian's native keychain namespace
+    #[cfg(feature = "native-keyring")]
+    Secret {
+        #[command(subcommand)]
+        action: SecretAction,
+    },
 }
 
 #[derive(Subcommand, Debug, Clone)]
@@ -85,6 +101,47 @@ enum ServiceAction {
     Stop,
 }
 
+#[cfg(feature = "native-keyring")]
+#[derive(Subcommand, Debug, Clone)]
+enum SecretAction {
+    /// Store a value entered through a hidden terminal prompt
+    Set {
+        /// Canonical keychain reference, for example {{secret:keychain://providers/openai#api_key}}
+        reference: SecretRef,
+    },
+    /// Delete an exact keychain entry
+    Delete {
+        /// Canonical keychain reference to delete
+        reference: SecretRef,
+    },
+}
+
+#[cfg(feature = "native-keyring")]
+async fn handle_secret_command(action: SecretAction) -> anyhow::Result<()> {
+    let admin = KeychainAdmin;
+
+    match action {
+        SecretAction::Set { reference } => {
+            KeychainAdmin::validate_reference(&reference)?;
+            let value = rpassword::prompt_password("Secret value: ")?;
+            let value = SecretValue::new(value)?;
+            admin.set(&reference, value).await?;
+            banner::print_success(&format!(
+                "Stored {reference} in the native credential store."
+            ));
+        }
+        SecretAction::Delete { reference } => {
+            KeychainAdmin::validate_reference(&reference)?;
+            admin.delete(&reference).await?;
+            banner::print_success(&format!(
+                "Deleted {reference} from the native credential store."
+            ));
+        }
+    }
+
+    Ok(())
+}
+
 fn get_env_path() -> PathBuf {
     // Determine the base directory: the directory containing the executable.
     if let Ok(exe_path) = std::env::current_exe() {
@@ -96,14 +153,16 @@ fn get_env_path() -> PathBuf {
 }
 
 fn handle_service_command(action: ServiceAction) -> anyhow::Result<()> {
-    let label: ServiceLabel = "com.openguardian.shield".parse().unwrap();
+    let label: ServiceLabel = "com.openguardian.shield"
+        .parse()
+        .map_err(|error| anyhow::anyhow!("invalid native service label: {error}"))?;
     let manager = <dyn ServiceManager>::native()
-        .map_err(|e| anyhow::anyhow!("Failed to detect service manager: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("Failed to detect service manager: {e}"))?;
 
     match action {
         ServiceAction::Install => {
             let exe_path = std::env::current_exe()?;
-            banner::print_step(&format!("Installing service {}...", label));
+            banner::print_step(&format!("Installing service {label}..."));
 
             manager
                 .install(ServiceInstallCtx {
@@ -125,7 +184,7 @@ fn handle_service_command(action: ServiceAction) -> anyhow::Result<()> {
                         }
                     },
                 })
-                .map_err(|e| anyhow::anyhow!("Installation failed: {}", e))?;
+                .map_err(|e| anyhow::anyhow!("Installation failed: {e}"))?;
 
             #[cfg(windows)]
             {
@@ -148,30 +207,30 @@ fn handle_service_command(action: ServiceAction) -> anyhow::Result<()> {
             banner::print_success("Service installed successfully.");
         }
         ServiceAction::Uninstall => {
-            banner::print_step(&format!("Uninstalling service {}...", label));
+            banner::print_step(&format!("Uninstalling service {label}..."));
             manager
                 .uninstall(ServiceUninstallCtx {
                     label: label.clone(),
                 })
-                .map_err(|e| anyhow::anyhow!("Uninstallation failed: {}", e))?;
+                .map_err(|e| anyhow::anyhow!("Uninstallation failed: {e}"))?;
             banner::print_success("Service uninstalled successfully.");
         }
         ServiceAction::Start => {
-            banner::print_step(&format!("Starting service {}...", label));
+            banner::print_step(&format!("Starting service {label}..."));
             manager
                 .start(ServiceStartCtx {
                     label: label.clone(),
                 })
-                .map_err(|e| anyhow::anyhow!("Failed to start service: {}", e))?;
+                .map_err(|e| anyhow::anyhow!("Failed to start service: {e}"))?;
             banner::print_success("Service started.");
         }
         ServiceAction::Stop => {
-            banner::print_step(&format!("Stopping service {}...", label));
+            banner::print_step(&format!("Stopping service {label}..."));
             manager
                 .stop(ServiceStopCtx {
                     label: label.clone(),
                 })
-                .map_err(|e| anyhow::anyhow!("Failed to stop service: {}", e))?;
+                .map_err(|e| anyhow::anyhow!("Failed to stop service: {e}"))?;
             banner::print_success("Service stopped.");
         }
     }
@@ -217,6 +276,7 @@ fn windows_service_main(_arguments: Vec<std::ffi::OsString>) {
     rt.block_on(async {
         if let Err(e) = run_app(
             Commands::Start {
+                bind: None,
                 port: None,
                 upstream: None,
                 local: false,
@@ -277,7 +337,7 @@ async fn main() -> anyhow::Result<()> {
     // Check if we are being run as a Windows service
     #[cfg(windows)]
     {
-        if std::env::args().any(|arg| arg == "start") && !atty::is(atty::Stream::Stdout) {
+        if std::env::args().any(|arg| arg == "start") && !std::io::stdout().is_terminal() {
             tracing::info!("Starting as Windows Service...");
             return service_dispatcher::start("com.openguardian.shield", ffi_service_main)
                 .map_err(|e| anyhow::anyhow!("Service dispatcher failed: {}", e));
@@ -305,18 +365,19 @@ async fn run_app(
 ) -> anyhow::Result<()> {
     match command {
         Commands::Start {
+            bind,
             port,
             upstream,
             local,
             verbose,
         } => {
-            let file_config = config::load_config();
+            let file_config = config::load_config()?;
 
             let upstream_url = if local {
                 let ollama_url = "http://127.0.0.1:11434/v1";
                 banner::print_step("Checking local Ollama status...");
                 if TcpStream::connect_timeout(
-                    &"127.0.0.1:11434".parse().unwrap(),
+                    &std::net::SocketAddr::from(([127, 0, 0, 1], 11434)),
                     Duration::from_secs(1),
                 )
                 .is_err()
@@ -332,12 +393,19 @@ async fn run_app(
                         .server
                         .as_ref()
                         .and_then(|s| s.default_upstream.clone()))
-                    .unwrap_or_else(|| "https://api.openai.com/v1".to_string())
+                    .unwrap_or_else(|| "http://127.0.0.1:11434/v1".to_string())
             };
 
             let port = port
                 .or(file_config.server.as_ref().and_then(|s| s.port))
                 .unwrap_or(8080);
+
+            let bind_address = bind
+                .or(file_config
+                    .server
+                    .as_ref()
+                    .and_then(|s| s.bind_address.clone()))
+                .unwrap_or_else(|| "127.0.0.1".to_string());
 
             let timeout_seconds = 300;
 
@@ -369,6 +437,7 @@ async fn run_app(
                 .unwrap_or_default();
 
             let config = ServerConfig {
+                bind_address,
                 port,
                 default_upstream: upstream_url,
                 routes,
@@ -382,29 +451,34 @@ async fn run_app(
                 dlp_config,
                 load_balancer: file_config.load_balancer,
                 security: file_config.security.clone(),
+                vault: file_config.vault,
             };
 
-            tracing::info!("Server starting on port {}", port);
+            tracing::info!("Server starting on {}:{}", config.bind_address, port);
             server::start_server(config, shutdown_token).await?;
         }
         Commands::Audit { path } => {
             audit::run_audit(&path)?;
         }
         Commands::Sign { rules_dir } => {
+            let rules_dir = config::resolve_resource_path(rules_dir);
             let key = std::env::var("GUARDIAN_HMAC_KEY")
-                .expect("FATAL: GUARDIAN_HMAC_KEY must be set in environment to sign rules");
+                .map_err(|_| anyhow::anyhow!("GUARDIAN_HMAC_KEY must be set to sign rules"))?;
+            if key.is_empty() {
+                return Err(anyhow::anyhow!(
+                    "GUARDIAN_HMAC_KEY cannot be empty when signing rules"
+                ));
+            }
 
-            banner::print_step(&format!("Signing rules in {}/...", rules_dir));
+            banner::print_step(&format!("Signing rules in {}/...", rules_dir.display()));
 
             let checker =
                 crate::security::integrity::RuleIntegrityChecker::new(&rules_dir, &key, false)
-                    .map_err(|e| {
-                        anyhow::anyhow!("Failed to initialize integrity checker: {}", e)
-                    })?;
+                    .map_err(|e| anyhow::anyhow!("Failed to initialize integrity checker: {e}"))?;
 
             checker
                 .save_manifest()
-                .map_err(|e| anyhow::anyhow!("Failed to save manifest: {}", e))?;
+                .map_err(|e| anyhow::anyhow!("Failed to save manifest: {e}"))?;
 
             banner::print_success(
                 "Rules signed successfully. Manifest generated (.manifest.json).",
@@ -412,6 +486,10 @@ async fn run_app(
         }
         Commands::Service { action } => {
             handle_service_command(action)?;
+        }
+        #[cfg(feature = "native-keyring")]
+        Commands::Secret { action } => {
+            handle_secret_command(action).await?;
         }
     }
 

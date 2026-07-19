@@ -1,11 +1,11 @@
 # Rust
 /target
-Cargo.lock
 
 # Environment & Secrets
 .env
 *.env
 auth.toml
+rules/.manifest.json
 
 # Logs & Data
 *.log

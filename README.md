@@ -1,423 +1,213 @@
-<p align="center">
-  <img src="openguardian.jpg" alt="Open-Guardian Logo" width="100%">
-  <p align="center"><strong>The High-Performance Firewall for AI Agents.</strong></p>
-  <p align="center"><em>Built in Rust. Agent-First. Defense-in-Depth.</em></p>
-  <p align="center">
-    <a href="#-quickstart"><img src="https://img.shields.io/badge/Get_Started-blue?style=for-the-badge" alt="Get Started"></a>
-    <a href="#-architecture"><img src="https://img.shields.io/badge/Architecture-purple?style=for-the-badge" alt="Architecture"></a>
-    <a href="#%EF%B8%8F-configuration"><img src="https://img.shields.io/badge/Configuration-green?style=for-the-badge" alt="Configuration"></a>
-    <a href="#-contributing"><img src="https://img.shields.io/badge/Contributing-orange?style=for-the-badge" alt="Contributing"></a>
-  </p>
-</p>
+# Open-Guardian
 
----
+Local-first privacy control plane and secret boundary for OpenAI-compatible applications.
 
-## 💡 What Is This?
+Open-Guardian sits between a chat, RAG system, agent framework, or personal second brain and its model provider. It keeps local routing local by default, applies deterministic policy, replaces sensitive request values with reversible request-scoped placeholders, and resolves provider credentials outside model context.
 
-Open-GuardIAn is a **high-performance security middleware / reverse proxy** built in Rust that sits between your applications and any LLM provider (OpenAI, Groq, Ollama, Anthropic, etc.). It enforces real-time governance policies to prevent data leaks, block prompt injections, and stop agents from executing dangerous actions — all before the request ever reaches the model.
+It is intentionally **not** a second-brain UI, indexer, autonomous agent, or general secret-reveal API. A project such as Smith can own notes, scopes, retrieval, chat, and consolidation while reusing Open-Guardian for provider egress and secrets.
 
-```
- Your App ──▶ Open-GuardIAn ──▶ LLM Provider
-                   │
-            ┌──────┴───────┐
-            │  Layer 1     │  ← DLP Anonymizer + Threat Engine (Rust, <20µs)
-            │  Layer 2     │  ← Heuristic Injection Scanner (Rust, <20µs)
-            │  Layer 3     │  ← AI Judge: qwen2.5:0.5b via Ollama (Contextual)
-            └──────────────┘
-```
+## Project status
 
-### 🏆 Why Open-GuardIAn vs. Python Gateways?
+The current source release is v0.2.0. It is a local-first security gateway with a reusable SecretBroker; the portable vault remains intentionally read-only and pre-production.
 
-| Feature | **Open-GuardIAn** | Trylon / GPT Guard |
-|---------|-------------------|-------------------|
-| **Language** | 🦀 Rust | 🐍 Python |
-| **Latency** | **<20µs** microsecond scan | 5-50ms |
-| **DLP** | Anonymizer tokens (`<EMAIL>`, `<KEY>`) — preserves context for Agents | `[REDACTED]` or regex-only |
-| **AI Intelligence** | Local LLM Judge with RAG context (qwen2.5:0.5b) | ❌ Regex only |
-| **Agent-First** | ✅ `rm -rf` allowed for agents, blocked for attackers | ❌ Blocks all dangerous commands |
-| **Fail-Safe** | Layer 1 & 2 provide Trylon-level security without GPU | Depends on service availability |
-| **Multilingual** | 🌍 EN + ES dictionaries, add any language | English-only |
+Implemented in v0.2.0:
 
----
+- Loopback-only bind and local Ollama-compatible upstream by default.
+- External providers require an explicit model route, explicit load-balancer activation, or the explicit `--upstream` CLI override.
+- Request scanning for all message roles, content parts, `prompt`, `input`, `instructions`, and tool-call arguments.
+- Reversible, per-request DLP placeholders restored only after the response returns locally.
+- Complete response inspection, including SSE, with a 16 MiB bound.
+- Typed `SecretRef`, reusable `SecretBroker`, zeroizing `SecretValue`, `env://`, and namespaced native `keychain://` backends.
+- Feature-gated read-only age v1 portable vault with strict bounded payload validation.
+- Provider credentials injected only into the upstream `Authorization` header.
+- Read-compatible migration from deprecated `key_env` configuration.
+- Deterministic audit/block policy; optional AI Judge disabled by default.
+- Optional HMAC rule integrity that fails closed once configured.
+- Reproducible binary dependency graph through committed `Cargo.lock`.
 
-## 🎯 Who Is This For?
+Not implemented yet:
 
-| Audience | Problem We Solve |
-|----------|-----------------|
-| **Agent builders** (AutoGPT, CrewAI, LangChain) | Prevent agents from executing `rm -rf /`, `curl | bash`, or destroying infrastructure — while still letting them use those tools legitimately |
-| **RAG chatbot developers** | Stop end-users from jailbreaking your bot, leaking system prompts, or exfiltrating PII |
-| **Enterprise teams** | Enforce DLP policies — no API keys, SSNs, or credit cards ever leave your network |
-| **AI platform operators** | Drop-in reverse proxy with zero code changes to existing OpenAI-compatible APIs |
+- A user-facing reveal/copy UI and local authorization flow.
+- Writable portable-vault operations, pairing, recovery, rollback anchors, or device revocation.
+- RAG, note ingestion, Obsidian-style index, chat UI, or session compression.
+- Token-by-token response streaming. SSE is buffered by design until a safe streaming protocol is implemented.
+- A sensitivity classifier and per-scope consent UI for external-provider routing.
 
----
+See [ADR-0001](docs/adr/0001-portable-vault-format.md) for the portable vault security design and implementation gates.
 
-## ✨ Key Features
+## Why this belongs next to a second brain
 
-### ⚡ 3-Layer Defense Architecture
+A useful operational memory contains IPs, ports, hostnames, runbooks, provider configuration, and references to credentials. A normal hosted chat can make that knowledge convenient, but sending the entire operational context to a third party defeats the privacy goal.
 
-Open-GuardIAn uses a **Defense-in-Depth** security model — starting with cryptographic integrity and ending with cognitive analysis.
+Open-Guardian separates responsibilities:
 
-#### Layer 0: HMAC Signed Integrity (Boot-Time Protection)
-The server **refuses to start** unless all rule files (`rules/*.json`) are cryptographically signed with a valid HMAC-SHA256 signature. This prevents attackers (or insiders) from tampering with the security definitions to bypass checks.
-- Command: `open-guardian sign` to generate signatures.
-- Verification: Automatic on startup.
-
-#### Layer 1: DLP Anonymizer — "The Iron Dome" (CPU — Sub-millisecond — Always On)
-
-The DLP layer is the first line of defense. It scans every request for sensitive data and replaces it with **context-preserving anonymizer tokens** that let AI agents understand what type of data was present without exposing the actual values.
-
-| Data Type | Pattern | Anonymizer Token |
-|-----------|---------|------------------|
-| Email | `user@example.com` | `<EMAIL>` |
-| OpenAI Key | `sk-proj-abc123...` | `<KEY>` |
-| AWS Key | `AKIA...` | `<AWS_KEY>` |
-| GitHub Token | `ghp_...` | `<GITHUB_TOKEN>` |
-| Slack Token | `xoxb-...` | `<SLACK_TOKEN>` |
-| Groq Key | `gsk_...` | `<KEY>` |
-| SSN | `123-45-6789` | `<SSN>` |
-| Credit Card | `4111-1111-1111-1111` | `<CC>` |
-| IPv4 | `192.168.1.1` | `<IP>` |
-| Phone | `+1-555-123-4567` | `<PHONE>` |
-| Bearer Token | `Bearer eyJ...` | `<BEARER>` |
-| Generic Secret | `api_key=abc123...` | `<SECRET>` |
-
-Each category can be individually toggled on/off via `guardian.toml`:
-
-```toml
-[security.dlp]
-email_redaction = true
-credit_card_redaction = true
-secret_redaction = true
-ssn_redaction = true
-ip_redaction = true
-phone_redaction = true
+```text
+Second brain / app
+  owns scopes, retrieval, citations, chat, and explicit user intent
+        |
+        | OpenAI-compatible request + model alias
+        v
+Open-Guardian
+  owns local routing, egress policy, DLP, SecretRef, and audit metadata
+        |
+        +--> local Ollama/vLLM by default
+        |
+        `--> explicit external route with brokered provider credential
 ```
 
-#### Layer 2: Heuristic Engine (CPU — Sub-millisecond — Always On)
+The model can receive an opaque reference such as:
 
-- **🛡️ Injection Scanner** — Normalization-aware scoring engine:
-  - Defeats **accents** (`Tú eres DAN` → `tu eres dan`)
-  - Defeats **spacing tricks** (`I g n o r e` → `ignore`)
-  - 5 threat categories: Jailbreak, System Prompt Extraction, Roleplay, RCE, Data Exfiltration
-  - ~40 weighted patterns with configurable score threshold
-
-- **📋 Threat Engine Signatures** — Modular, internationalized database:
-  - **Severity 100 (Block)**: `cat /etc/passwd`, `drop table`, `{{.*}}`, `eval(base64`, `union select`, `system.exit`
-  - **Severity 80 (Tag & Audit)**: `rm -rf`, `wget`, `curl`, `chmod`, `exec(`, `whoami` — Agent-First: these are tagged for AI Judge review, not blocked
-  - **Severity 70 (Context)**: `hacker`, `malware`, `act as` — signals for context enrichment
-  - **Emergency Kit**: Critical patterns hardcoded in the Rust binary — system is **never** unprotected
-  - **DevOps Whitelisting**: Explicitly allow `git pull`, `kubectl apply`, etc.
-  - **Multilingual**: EN + ES dictionaries, easily extensible
-
-> **Note**: Layer 2 uses advanced normalization-aware heuristics. Unlike heavier BERT models (like PromptGuard), this layer is deterministic, runs in **under 20 microseconds (<20µs)**, and ensures that legitimate traffic passes through with **zero perceptible overhead**.
-
-#### Layer 3: AI Judge — "The Sheriff" (Optional but Recommended)
-
-> [!NOTE]
-> **This layer is OPTIONAL.** Open-Guardian provides enterprise-grade security (Layer 1 & 2) even without the AI Judge.
-
-- **🤠 Contextual Intent Analysis** — Uses a local LLM (via Ollama) to decide whether flagged commands are legitimate agent operations or actual attacks
-- **Agent-First Philosophy**: `rm -rf /tmp/cache` for cleanup? **SAFE**. `rm -rf /` without context? **UNSAFE**.
-- **Model Agnostic**: Defaults to `qwen2.5:0.5b` (fast/light), but **can use ANY model** available in your Ollama library (e.g., `llama3`, `mistral`, `gemma`).
-- **RAG-Powered**: The Judge receives similar threat patterns as precedent in its system prompt
-- **Performance-Optimized**:
-  - `moka` semantic cache — repeat prompts resolved in <1ms
-  - `tokio::Semaphore` concurrency control — protects host resources
-  - Configurable **fail-open** or **fail-closed** when the AI is unavailable
-- **Disable Strategy**: To run heuristics-only, set `ai_judge_enabled = false` in `guardian.toml`.
-
-### 🛣️ Smart Multi-Provider Router
-
-- **Unified Endpoint**: One URL (`http://localhost:8080/v1`) for all your AI needs.
-- **Cost & Latency Optimization**: Route bulk tasks to cheaper/faster providers (Groq) and complex reasoning to capable models (GPT-4), controlled entirely by config.
-- **Vendor Lock-in Protection**: Swap "gpt-4" to point to "claude-3-opus" in the config without changing a single line of application code.
-
-### ⚡ Semantic Load Balancer — Cost-Optimized Routing
-
-The **Semantic Load Balancer (SLB)** automatically routes prompts to the right tier based on their **complexity score** — computed deterministically in **microseconds**, with zero LLM calls.
-
-#### Complexity Scoring (0-100+)
-
-| Signal | Points |
-|--------|--------|
-| Base score | +10 |
-| Length | +1 per 50 characters |
-| Complexity keyword<br>(`code`, `function`, `rust`, `debug`, `architect`, etc.) | +20 each |
-| Code block (` ``` `) or JSON structure (`{...}`) | +30 |
-
-#### Routing Decision
-
-| Score vs. Threshold | Tier | Behavior |
-|---------------------|------|----------|
-| Score **< threshold** (default 40) | `🟢 TIER_FAST` | Cheap & fast (e.g. Groq / Llama-3-8b) |
-| Score **≥ threshold** | `🔵 TIER_SMART` | High-intelligence (e.g. GPT-4-Turbo) |
-
-> **Example:** `"Hello"` → Score 10 → **TIER_FAST** (Groq).  
-> `"Architect a Rust async runtime with backpressure"` → Score 90 → **TIER_SMART** (GPT-4).
-
-**Configuration (`guardian.toml`):**
-```toml
-[load_balancer]
-enabled = true
-smart_threshold = 40   # Tune based on your cost/quality trade-off
-
-[load_balancer.fast]
-url = "https://api.groq.com/openai"
-model = "llama3-8b-8192"
-key_env = "GROQ_API_KEY"
-
-[load_balancer.smart]
-url = "https://api.openai.com/v1"
-model = "gpt-4-turbo"
-key_env = "OPENAI_API_KEY"
+```text
+{{secret:vault://infrastructure/proxmox#password}}
 ```
 
-> [!NOTE]
-> The SLB is a **hard override** — it rewrites both the upstream URL and the model field so the client never needs to know which backend served the request. The correct API key is always injected automatically.
+It does not receive the referenced value. A future native UI can render that reference as a Reveal/Copy capsule and ask `SecretBroker` only after local authorization.
 
-### 📐 Policy Manager — "The Governor"
+## Security invariants
 
-Four enforcement modes for every security check:
+1. A literal provider API key is not valid route configuration.
+2. Provider credentials are resolved after routing, outside the JSON body, and injected only as an HTTP header.
+3. Missing, empty, malformed, duplicated, or unsupported credential configuration fails closed.
+4. `SecretValue` is not cloneable or serializable, redacts `Debug`, and zeroizes its owned buffer on drop.
+5. Request DLP mappings live only for one request and never enter configuration, logs, or the upstream body.
+6. A token minted by another request cannot resolve in the current request.
+7. All model responses pass DLP before request placeholders are restored locally.
+8. Invalid configuration is an error; Open-Guardian does not silently fall back after finding a broken config file.
+9. The network listener and unmatched model route are local by default.
+10. The proxy does not execute model-generated shell commands or expose filesystem tools.
 
-| Policy | Behavior |
-|--------|----------|
-| `block` | Return 403 Forbidden — request never reaches the LLM |
-| `audit` | Log `WARN` + inject `X-Guardian-Risk: High` header + forward |
-| `redact` | Sanitize sensitive data with anonymizer tokens and forward |
-| `allow` | No enforcement (not recommended for production) |
+These controls do not protect an already compromised, unlocked device. Malware with process-memory, clipboard, accessibility, or screen access remains inside the trust boundary.
 
----
+## Architecture
 
-## 🌐 Smart Routing & Gateway Mode
-
-Open-Guardian is not just a firewall; it is a **Multi-Provider API Gateway**. You can configure a single instance to route traffic to dozens of different providers based on the `model` field in your request.
-
-### 🔀 Dynamic Routing
-"Request `gpt-4`? Send to OpenAI."
-"Request `llama-3`? Send to Groq for speed."
-"Request `mistral`? Send to a local vLLM instance."
-
-All of this happens **transparently** to your client application.
-
-### 🔑 Zero-Trust Key Injection
-Client applications **DO NOT** need to handle provider API keys.
-1. You set keys in your server's `.env` (e.g., `OPENAI_API_KEY`, `GROQ_API_KEY`).
-2. Open-Guardian injects the correct key into the upstream request header based on the destination.
-3. This ensures **keys never leak** to client-side agents or logs.
-
-### 🏷️ Model Aliasing
-You can define custom model names (aliases) that map to specific provider versions. This allows you to swap underlying models without changing application code.
-
-**Configuration Example (`guardian.toml`):**
-
-```toml
-[routes]
-# 1. Alias "fast-model" to Llama 3 on Groq
-"fast-model" = { url = "https://api.groq.com/openai", model = "llama3-70b-8192", key_env = "GROQ_API_KEY" }
-
-# 2. Standard GPT-4o routing
-"gpt-4o" = { url = "https://api.openai.com/v1", key_env = "OPENAI_API_KEY" }
-
-# 3. Secure Local Fallback
-"local-judge" = { url = "http://127.0.0.1:11434/v1" }
+```text
+HTTP client
+   |
+   | 1. path/header checks + global rate limit
+   | 2. strict JSON parsing (non-JSON denied by default)
+   | 3. extract supported text fields
+   | 4. DLP block or request-scoped reversible redaction
+   | 5. Unicode normalization + deterministic risk checks
+   | 6. audit/block decision
+   | 7. deterministic model route
+   | 8. SecretBroker resolves only the selected provider credential
+   v
+Upstream model
+   |
+   | 9. bounded full-body/SSE buffering
+   | 10. response DLP
+   | 11. local restoration of this request's placeholders
+   v
+HTTP client
 ```
 
-**Client Usage:**
-```json
-// The client just asks for "fast-model"
-POST /v1/chat/completions
-{
-  "model": "fast-model",
-  "messages": [...]
-}
-// Guardian routes this to Groq with the GROQ_API_KEY automatically.
+Main code areas:
+
+```text
+src/
+├── lib.rs                 reusable library entry point
+├── secrets/
+│   ├── mod.rs             SecretBroker, backend trait, env backend, SecretValue
+│   ├── keychain.rs        read-only, namespaced native credential-store backend
+│   ├── vault.rs           bounded read-only age decryption backend
+│   ├── vault_payload.rs   strict versioned plaintext parser
+│   └── reference.rs       canonical SecretRef parser and serde contract
+├── pipeline/extract.rs    supported OpenAI-compatible request text extraction
+├── security/
+│   ├── dlp.rs             detection, irreversible response redaction, reversible sessions
+│   ├── normalizer.rs      Unicode/code-aware normalization
+│   ├── injection_scanner.rs
+│   ├── threat_engine.rs
+│   ├── integrity.rs       optional HMAC rule manifest
+│   └── judge.rs           legacy optional local judge
+├── proxy.rs               upstream HTTP and final response reconstruction
+├── router.rs              deterministic complexity router
+├── server.rs              Axum request orchestration
+├── config.rs              strict TOML discovery, parsing, and migration
+└── main.rs                CLI and service entry point
+
+rules/                     modular deterministic signatures
+guardian.toml              documented local-first example configuration
+docs/adr/                  security and architecture decisions
 ```
 
-### 🔄 Drop-in Replacement Example
+Some older security modules remain present but are not wired into the active request path. Documentation and tests must distinguish implemented boundaries from planned infrastructure.
 
-You don't need to change your code logic—just point the `base_url` to Guardian.
+## Quick start
 
-```python
-# Python (OpenAI SDK) Example
-from openai import OpenAI
+### Requirements
 
-client = OpenAI(
-    base_url="http://localhost:8080/v1",  # Point to Guardian
-    api_key="sk-dummy"                    # Guardian injects the real key!
-)
+- Rust 1.88 or newer.
+- Optional: Ollama or another OpenAI-compatible server on `127.0.0.1:11434`.
+- Optional external route: provider key supplied through the configured SecretBroker backend.
 
-# Route to Groq automatically by using the alias defined in guardian.toml
-response = client.chat.completions.create(
-    model="fast-model",
-    messages=[{"role": "user", "content": "Hello!"}]
-)
-# Guardian routes this to Groq, injects the key, and anonymizes the prompt.
-```
-
-### 📝 Forensic Audit Logging
-
-- All security events logged in **JSONL** format with timestamps
-- Events: `injection_blocked`, `dlp_blocked`, `data_redacted`, `threat_blocked`, `semantic_blocked`
-- Easily ingestible by SIEM tools (Splunk, ELK, Datadog)
-
-### 📊 Observability (Rolling Logs)
-
-- **Daily Rotation**: Application logs are automatically rotated and saved to the `logs/` directory (e.g., `open-guardian.YYYY-MM-DD.log`).
-- **Non-Blocking I/O**: Logging uses an asynchronous, non-blocking actor system (via `tracing-appender`), ensuring that disk writes never slow down the proxy's core engine.
-
----
-
-> [!TIP]
-> **PRO TIP: HYBRID ARCHITECTURE**
-> For maximum performance, use a **Hybrid Setup**: Route your generation traffic to **Groq or OpenAI** (for speed) while keeping the **AI Judge** local on Ollama. This prevents your primary generation GPU from being saturated by security checks and guarantees the fastest possible response times.
-
----
-
-## 🚀 Quickstart & Installation
-
-Open-Guardian can be run as a **standalone binary** (no installation required) or installed as a **system service** (daemon).
-
-### Option A: 📦 Pre-built Binaries (No Rust Required)
-
-**Ideal for**: Production deployment, DevOps, non-Rust developers.
-
-1. **Download** the latest release for your OS from the [Releases Page](https://github.com/AnthonySmith96/open-guardian/releases).
-2. **Unzip** the archive.
-3. **Verify** you have the following **REQUIRED** files in the same directory:
-    - `open-guardian` (The executable)
-    - `guardian.toml` (Configuration file)
-    - `.env` (API Keys)
-    - `rules/` (Directory containing `common.json`, `jailbreaks_en.json`, etc.) ⚠️ **CRITICAL**: The heuristic engine requires this folder to detect threats.
-
-#### Run (Interactive Mode):
-```bash
-# Linux/Mac
-./open-guardian start
-
-# Windows
-.\open-guardian.exe start
-```
-
-### Option B: 🛠️ Compiling from Source
-
-**Ideal for**: Rust developers, contributors.
+### Build and verify
 
 ```bash
 git clone https://github.com/AnthonySmith96/open-guardian.git
 cd open-guardian
-# Creates a release binary in ./target/release/
-cargo build --release
+
+cargo test --all-targets --locked
+cargo clippy --all-targets --all-features --locked -- -D warnings
+cargo build --release --locked
 ```
 
----
-
-## 🏃 Usage & Execution Modes
-
-### 1. Interactive Mode (CLI)
-
-Run the proxy in your terminal foreground. Useful for testing and debugging.
+### Run locally
 
 ```bash
-# Standard Start (uses guardian.toml config)
-./open-guardian start
+# guardian.toml defaults to 127.0.0.1:8080 and local Ollama-compatible upstream.
+cargo run --locked -- start
 
-# Verbose Logging (Debug mode)
-./open-guardian start --verbose
+# Equivalent forced-local shortcut with another port.
+cargo run --locked -- start --local --port 18080
 
-# Local-Only Mode (Forces all upstream traffic to localhost:11434)
-./open-guardian start --local
+curl http://127.0.0.1:8080/health
 ```
 
-### 2. Service Mode (Daemon) 🤖
+Point an OpenAI-compatible client at:
 
-Install Open-Guardian as a background service that auto-starts on boot and self-heals on failure.
-
-**Prerequisite**: Ensure `open-guardian`, `guardian.toml`, `.env`, and `rules/` are in your desired install location BEFORE installing the service.
-
-#### 🪟 Windows (Administrator PowerShell)
-```powershell
-.\open-guardian.exe service install
-.\open-guardian.exe service start
-.\open-guardian.exe service status
+```text
+http://127.0.0.1:8080/v1
 ```
 
-#### 🐧 Linux / 🍎 macOS (Sudo)
-```bash
-sudo ./open-guardian service install
-sudo ./open-guardian service start
-sudo ./open-guardian service status
+### Portable binary layout
+
+For a standalone distribution, keep runtime resources beside the executable:
+
+```text
+open-guardian[.exe]
+guardian.toml
+rules/
+  common.json
+  jailbreaks_en.json
+  jailbreaks_es.json
 ```
 
-> [!NOTE]
-> **Uninstall**: `open-guardian service stop` then `open-guardian service uninstall`
+Configuration discovery order is:
 
-**Logs:** On Linux, use `journalctl -u open-guardian`. On Windows, check the Event Viewer or the `logs/` directory.
+1. `GUARDIAN_CONFIG` when explicitly set; the target must exist and parse.
+2. `guardian.toml` beside the executable.
+3. `guardian.toml` in the current working directory, for development.
+4. Built-in local-first defaults when no file exists.
 
----
+Relative dictionary paths are anchored to the configuration file that declares them.
 
-## 🏗️ Architecture
+Tagged GitHub releases package this complete layout for Linux x86_64, Windows x86_64, macOS Intel, and macOS Apple Silicon. Each release includes `SHA256SUMS` and GitHub build-provenance attestations. The workflow rejects tags that do not match the version in `Cargo.toml`.
 
-graph TD
-    User[App / Agent] -->|HTTP Request| Proxy[Open-GuardIAn Proxy :8080]
-    
-    subgraph "🛡️ Security Pipeline"
-        Proxy --> Layer1[Layer 1: DLP Anonymizer]
-        Layer1 -->|Redacted| Layer2[Layer 2: Heuristics <20µs]
-        
-        Layer2 -- "Sev 100 (Critical)" --> Block[⛔ BLOCK 403]
-        Layer2 -- "Sev 80 (Suspicious)" --> Layer3Check{AI Judge Enabled?}
-        Layer2 -- "Safe Traffic" --> Router[Smart Router]
-        
-        Layer3Check -- Yes --> Layer3[Layer 3: AI Sheriff qwen2.5]
-        Layer3Check -- No --> Audit[⚠️ LOG WARN]
-        
-        Layer3 -- "Malicious" --> Block
-        Layer3 -- "Safe Context" --> Router
-        Audit --> Router
-    end
-    
-    subgraph "☁️ Upstreams"
-        Router -->|gpt-4o| OpenAI[OpenAI API]
-        Router -->|llama-3| Groq[Groq Cloud]
-        Router -->|local| Ollama[Local LLM]
-    end
-    
-    style Block fill:#ff4d4d,stroke:#333,stroke-width:2px,color:white
-    style Router fill:#4d79ff,stroke:#333,stroke-width:2px,color:white
-    style Layer3 fill:#9933ff,stroke:#333,stroke-width:2px,color:white
+## Configuration
 
-### Pipeline Flow
-
-1. **Incoming Request** → Rate limiter check
-2. **Layer 1 — DLP**: Anonymize PII/secrets with `<TOKEN>` tags, or block if policy = `block`
-3. **Layer 2 — Heuristics** (always runs, sub-ms):
-   - **Injection Scanner**: Score adversarial patterns → block if score ≥ threshold
-   - **Threat Engine**: Match against signature database
-     - Sev 100 → **Deterministic Block** (SQLi, SSTI, Data Exfil)
-     - Sev 80 → **Tag & Audit** (Risky tools — AI Judge or Agent-First allow)
-     - Sev 70 → **Context Signal** (Enrich for AI Judge)
-4. **Layer 3 — AI Judge** (runs only if enabled AND risk tags present):
-   - Retrieve similar threat patterns (RAG) → check moka cache → acquire semaphore → call LLM
-   - **If AI Judge is OFF**: Sev 80 items → LOG WARN + ALLOW (Agent-First philosophy)
-5. **Policy Enforcement**: `403 Block` / `Audit + Forward` / `Allow + Forward`
-
----
-
-## ⚙️ Configuration
-
-### `guardian.toml`
+The checked-in [guardian.toml](guardian.toml) is the complete annotated example. A minimal local profile is:
 
 ```toml
 [server]
+bind_address = "127.0.0.1"
 port = 8080
-default_upstream = "https://api.groq.com/openai"
-requests_per_minute = 10000
+default_upstream = "http://127.0.0.1:11434/v1"
+requests_per_minute = 600
 
 [security]
-audit_log_path = "guardian_audit.jsonl"
-block_threshold = 50       # Injection score threshold (0-100)
+block_threshold = 50
 
-# DLP per-category toggles
 [security.dlp]
 email_redaction = true
 credit_card_redaction = true
@@ -427,196 +217,324 @@ ip_redaction = true
 phone_redaction = true
 
 [security.policies]
-default_action = "block"   # block | audit | redact | allow
-dlp_action = "redact"      # block | redact
-allowed_patterns = ["git pull", "git push", "kubectl get", "kubectl apply"]
+default_action = "audit"
+dlp_action = "redact"
 
-# Modular Threat Dictionaries
-[[security.dictionaries]]
+[[security.policies.dictionaries]]
 id = "common"
 path = "rules/common.json"
 enabled = true
 
-[[security.dictionaries]]
-id = "jailbreaks_en"
-path = "rules/jailbreaks_en.json"
-enabled = true
-
-[[security.dictionaries]]
-id = "jailbreaks_es"
-path = "rules/jailbreaks_es.json"
-enabled = true
-
 [judge]
-ai_judge_enabled = true
-ai_judge_endpoint = "http://127.0.0.1:11434/api/chat"
-ai_judge_model = "qwen2.5:0.5b"     # Fallback: qwen2.5:3b
-judge_cache_ttl_seconds = 60
-judge_max_concurrency = 4
-fail_open = true                 # true = Prioritize reliability
+ai_judge_enabled = false
 
-[routes]
-"gpt-oss" = { url = "https://api.groq.com/openai", model = "openai/gpt-oss-120b", key_env = "GROQ_API_KEY" }
-"llama-4" = { url = "https://api.groq.com/openai", model = "meta-llama/llama-4-maverick-17b-128e-instruct", key_env = "GROQ_API_KEY" }
-"gpt-4o" = { url = "https://api.openai.com/v1", key_env = "OPENAI_API_KEY" }
-"qwen2.5:0.5b" = { url = "http://127.0.0.1:11434/v1" }
+[load_balancer]
+enabled = false
 ```
 
-### `rules/` Directory (Modular Dictionaries)
+### Explicit external routes
 
-Add new languages or categories by creating a JSON file in `rules/` and referencing it in `guardian.toml`. All patterns must be **NORMALIZED** (lowercase, no accents).
+External egress is opt-in through a route:
 
-**Signature format:**
-```json
-{
-  "signatures": [
-    {
-      "id": "JB-ES-001",
-      "pattern": "olvida tus reglas",
-      "category": "Jailbreak",
-      "severity": 95,
-      "is_regex": false
-    }
-  ]
-}
+```toml
+[routes."work-gpt"]
+url = "https://api.openai.com/v1"
+model = "gpt-4.1-mini"
+credential = "{{secret:env://OPENAI_API_KEY}}"
+
+[routes."local-qwen"]
+url = "http://127.0.0.1:11434/v1"
+model = "qwen3:8b"
 ```
 
-**Severity guide:**
-| Severity | Action | Use For |
-|----------|--------|---------|
-| 100 | **Block always** | SQLi, SSTI, data exfiltration, binary payloads |
-| 90-99 | **Block always** | Jailbreaks, prompt leaks, instruction overrides |
-| 80-89 | **Tag & Audit** | Risky tools (rm, curl, wget, chmod) — AI Judge decides |
-| 70-79 | **Context signal** | Suspicious topics (hacker, malware) — enriches AI Judge |
-| 50-69 | **Tag only** | Low-confidence signals |
-
----
-
-## 🔧 CLI Reference
+Set the credential in the parent process or service environment:
 
 ```bash
-# Start the proxy
-open-guardian start [--port 8080] [--upstream URL] [--local] [--verbose]
-
-# Security audit — scan for exposed secrets and misconfigurations
-open-guardian audit [path]
-
-# Service management (Windows/Linux/macOS)
-open-guardian service install    # Install as system service
-open-guardian service uninstall  # Remove system service
-open-guardian service start      # Start the service
-open-guardian service stop       # Stop the service
+export OPENAI_API_KEY="..."
+cargo run --locked -- start
 ```
 
----
+Do not put a literal key in `guardian.toml`. The deprecated field:
 
-## 📁 Project Structure
-
-```
-open-guardian/
-├── src/
-│   ├── main.rs                    # CLI entry point & service management
-│   ├── server.rs                  # Axum server & 3-layer pipeline orchestrator
-│   ├── proxy.rs                   # Reqwest-based request forwarding
-│   ├── config.rs                  # TOML config loader & policy definitions
-│   ├── audit.rs                   # Static security analysis
-│   ├── banner.rs                  # Terminal UI (colored output)
-│   ├── logger.rs                  # Tracing/logging initialization
-│   └── security/
-│       ├── mod.rs                 # Module exports
-│       ├── dlp.rs                 # DLP Anonymizer (PII + Secrets → <TOKEN>)
-│       ├── injection_scanner.rs   # Adversarial pattern scoring engine
-│       ├── threat_engine.rs       # Signature DB + Emergency Kit + RAG
-│       ├── normalizer.rs          # Code-aware text normalization
-│       └── judge.rs               # AI Sheriff (qwen2.5:0.5b + moka cache + RAG)
-├── guardian.toml                  # Runtime configuration
-├── rules/                         # Modular threat dictionaries
-│   ├── common.json                # Universal threats (RCE, SQLi, SSTI, Secrets)
-│   ├── jailbreaks_en.json         # English jailbreak patterns
-│   └── jailbreaks_es.json         # Spanish jailbreak patterns
-├── audit_prod.py                  # Production audit script (500-req stress test)
-├── Cargo.toml                     # Rust dependencies
-├── CONTRIBUTING.md                # Contribution guidelines
-└── .env                           # API keys (gitignored)
+```toml
+key_env = "OPENAI_API_KEY"
 ```
 
----
+is migrated in memory to `{{secret:env://OPENAI_API_KEY}}` with a warning. Defining both forms is an error.
 
-## 🧪 Testing
+Every configuration section rejects unknown fields. Misspellings and fields such as `api_key = "..."` therefore fail startup instead of being silently ignored.
+
+Model and judge endpoints must be HTTP(S) base URLs without embedded userinfo, query parameters, or fragments. Credentials belong in `SecretRef`, never in a URL.
+
+### Semantic load balancer
+
+The deterministic load balancer scores the already-inspected request text and selects a fast or smart tier. It is disabled in the default profile because the example tiers are external.
+
+```toml
+[load_balancer]
+enabled = true
+smart_threshold = 40
+
+[load_balancer.fast]
+url = "https://api.groq.com/openai"
+model = "llama-3.1-8b-instant"
+credential = "{{secret:env://GROQ_API_KEY}}"
+
+[load_balancer.smart]
+url = "https://api.openai.com/v1"
+model = "gpt-4.1"
+credential = "{{secret:env://OPENAI_API_KEY}}"
+```
+
+Enabling this block is an explicit choice to send matching prompts to those providers.
+
+## SecretBroker
+
+### Canonical reference
+
+```text
+{{secret:<backend>://<logical/path>#<optional-field>}}
+```
+
+Examples:
+
+```text
+{{secret:env://OPENAI_API_KEY}}
+{{secret:keychain://providers/openai#api_key}}
+{{secret:vault://infrastructure/proxmox#password}}
+```
+
+`env://` and `keychain://` are enabled in standard binaries. `keychain://` maps only to the fixed application service `io.github.anthonysmith96.open-guardian`, so a reference cannot select another application's credential namespace. The read-only `vault://` backend is registered only when a `[vault]` section explicitly supplies its encrypted file and identity reference. Build with `--no-default-features` for a headless binary that only registers `env://`. Other schemes parse as references but fail closed until their backend is registered.
+
+The parser rejects:
+
+- Missing wrappers or schemes.
+- Uppercase/non-canonical backend names.
+- Absolute, empty, repeated, or traversal path segments.
+- Backslashes, control characters, raw whitespace, query strings, nested schemes, and multiple fragments.
+- References longer than 2 KiB.
+
+### Native keychain
+
+Provision an exact reference through a hidden terminal prompt:
 
 ```bash
-# Run all unit tests
-cargo test
-
-# Current test coverage:
-#   ✔ DLP: email, CC, SSN, IPv4, OpenAI key, sk-proj-, GitHub, Slack, Groq
-#   ✔ DLP: check_for_violations block mode
-#   ✔ Normalizer: lowercase, de-accent, syntax preservation, SSTI, SQL
-#   ✔ Threat Engine: Sev 100 blocking, Sev 80 tagging, SSTI regex, whitelisting
-#   ✔ Injection Scanner: jailbreak, extraction, RCE, safe input
-
-# Production audit (requires running instance)
-python audit_prod.py
+open-guardian secret set '{{secret:keychain://providers/openai#api_key}}'
 ```
 
----
+Then use the opaque reference in configuration:
 
-## 🛡️ Security Philosophy
+```toml
+credential = "{{secret:keychain://providers/openai#api_key}}"
+```
 
-> **"Agent-First. Defense-in-Depth. Secure by Default."**
+Delete it explicitly when it is no longer needed:
 
-1. **Agent-First** — We enable Agents to use tools (`curl`, `rm`, `wget`, `chmod`), not block them blindly. The AI Judge differentiates legitimate operations from attacks.
-2. **Layered Defense** — Layer 1 (DLP + Regex) works 100% without GPU. Layer 2 (Heuristics) catches obfuscated attacks. Layer 3 (AI Judge) provides contextual intent analysis.
-3. **Never Naked** — Even if all `rules/*.json` files are deleted, critical signatures are hardcoded in the Rust binary.
-4. **Fail-Safe** — If Layer 3 (AI) is off, Layer 1 & 2 provide "Trylon-level" security. Risky tools get logged, not blocked.
-5. **Anonymize, Don't Destroy** — DLP replaces sensitive data with `<EMAIL>`, `<KEY>` tokens that preserve semantic context for AI agents, instead of opaque `[REDACTED]` strings.
-6. **Audit Everything** — Every block, redaction, and threat match is logged with full forensic detail.
+```bash
+open-guardian secret delete '{{secret:keychain://providers/openai#api_key}}'
+```
 
----
+The secret value is never accepted as a command-line argument, so it does not enter shell history or the process list. These commands cannot enumerate entries and reject every scheme except `keychain://`. A platform may show its own authorization prompt. Headless builds made with `--no-default-features` omit both the native backend and these commands; use `env://` there.
 
-## 🤝 Contributing
+### Rust library API
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed guidelines on:
-- Setting up your development environment
-- Adding threat signatures
-- Writing scanner modules
-- Submitting pull requests
+The broker is available without starting the proxy:
 
----
+```rust,ignore
+use open_guardian::secrets::{EnvironmentBackend, SecretBroker, SecretRef};
 
-## 📄 License
+let mut broker = SecretBroker::new();
+broker.register(EnvironmentBackend)?;
 
-This project is open source. See [LICENSE](LICENSE) for details.
+let reference: SecretRef = "{{secret:env://OPENAI_API_KEY}}".parse()?;
+let value = broker.resolve(&reference).await?;
 
----
+// Only a narrow transport/tool boundary should call expose_secret().
+send_authorization_header(value.expose_secret()).await?;
+```
 
-<p align="center">
-  <strong>Built with ❤️ in Rust for a safer AI future.</strong><br>
-  <em>"The best AI firewall is the one that's always on — and the one that knows the difference between an agent doing its job and an attacker exploiting it."</em>
-</p>
+Models and generic application DTOs must not receive a `SecretBroker` handle or `SecretValue`.
 
-## ✍️ A Note from the Creator
+### Portable vault
 
-## Contributors
+The prototype can read an age v1 encrypted `.guardian.age` file after its X25519 identity is resolved outside the vault:
 
-**Author:** Anthony Smith ([@AnthonySmith96](https://github.com/AnthonySmith96)) — founded [CyberIndustree](https://github.com/CyberIndustree), created Open-GuardIAn.
+```toml
+[vault]
+path = "secrets/personal.guardian.age"
+identity = "{{secret:keychain://vaults/personal#age_identity}}"
 
-**Contributors:** Security hardening and architecture improvements by Hera & Hades — incorporating independent security audits (Claude 4.6, ChatGPT 5.3, Gemini) and applying Rust 2024 Edition best practices.
+[routes."work-gpt"]
+url = "https://api.openai.com/v1"
+credential = "{{secret:vault://providers/openai#api_key}}"
+```
 
-### v0.1.5 Security Hardening
+The encrypted payload and decrypted plaintext are bounded; format versions, timestamps, logical paths, fields, duplicates, and unknown properties are validated. Parsed values are zeroizing and cannot be serialized or printed through `Debug`.
 
-This release addresses **8 critical security vulnerabilities** identified through independent audits:
+This is explicitly read-only and pre-production. It currently has no rollback anchor, interoperability fixture with the independent Go implementation, initialization, pairing, recovery, mutation, or revocation. Production writes remain gated by the ADR's atomic-write, fuzz, rollback, interoperability, and heap-leak requirements. See [ADR-0001](docs/adr/0001-portable-vault-format.md).
 
-| Fix | Issue | Impact |
-|-----|-------|--------|
-| C1 | Non-JSON default-deny | Prevents complete security bypass |
-| C2 | Expanded scan coverage | Scans tool_calls, assistant messages, prompt/input |
-| C3/C4 | Normalize + casefold before DLP | Prevents Unicode/case evasion |
-| C5 | SSE streaming passthrough | Preserves streaming, prevents corruption |
-| C6 | Panic path removal | Eliminates DoS vectors |
-| C7 | Judge prompt injection protection | XML delimiters + escaping |
-| C8 | Bounded whitelist matching | Prevents command smuggling |
+## DLP behavior
 
-**Development:** Collaborative implementation following adversarial Red/Green methodology — write code as if a hostile auditor is reviewing every line.
+### Request redaction
 
-**Status:** v0.1.5 ready for security review and upstream integration
+In `redact` mode, each match becomes a token similar to:
+
+```text
+[[GUARDIAN_REDACTED:<random-request-nonce>:<index>:IP]]
+```
+
+The model retains the category and surrounding context without receiving the original value. The mapping is held in zeroizing memory for this request only.
+
+If an upstream response echoes that exact token, the original value is restored after response DLP and only on the local side. Fabricated, stale, or cross-request tokens remain inert.
+
+### Response handling
+
+All responses, including `text/event-stream`, are buffered to a maximum of 16 MiB before release. This prevents a provider from bypassing a regex by splitting a secret across TCP chunks or SSE events.
+
+The current proxy is deliberately text-only: a non-UTF-8 upstream body is uninspectable and therefore fails closed with `502` instead of bypassing DLP. Valid response bytes are preserved exactly; Open-Guardian does not append delimiters or normalize provider output.
+
+The tradeoff is deliberate: v0.2 does not provide token-by-token delivery. A future streaming design must prove boundary-safe incremental inspection before this changes.
+
+Provider-generated sensitive data that was not represented by a current request placeholder remains irreversibly redacted.
+
+### Categories
+
+Current detectors cover email, credit-card-like numbers, US SSNs, phone-like numbers, IPv4 addresses, common provider tokens, AWS access keys, GitHub tokens, Slack tokens, bearer tokens, and generic key/token assignments. Regex DLP can produce false positives and is not a complete secret classifier.
+
+## Policy profiles
+
+Threat/injection policy and DLP action are separate:
+
+| Setting | Effect |
+|---|---|
+| `default_action = "audit"` | Default second-brain profile. Forward risky text and add `X-Guardian-Risk` when a blocking threshold is reached. |
+| `default_action = "block"` | Strict firewall profile. Return 403 for threshold/blocking signatures. |
+| `default_action = "allow"` | Log but do not enforce threat decisions. Not recommended. |
+| `default_action = "redact"` | Deprecated compatibility alias for `audit`. |
+| `dlp_action = "redact"` | Use reversible request placeholders and sanitize response-only leaks. |
+| `dlp_action = "block"` | Reject a request/response when a configured DLP violation is found. |
+
+Audit is the default because a runbook may legitimately contain `curl`, `rm`, SQL, templates, or incident-response examples. Open-Guardian classifies text; it does not execute it.
+
+The legacy AI Judge can be enabled for compatibility, but it is not a security boundary and adds another inference call. It is disabled and fail-closed by default.
+
+## Rule integrity
+
+Fresh installs start without a machine-specific signing key. To enable local tamper detection:
+
+```bash
+export GUARDIAN_HMAC_KEY="a-long-random-machine-secret"
+cargo run --locked -- sign rules
+cargo run --locked -- start
+```
+
+Once either side of the integrity contract is present, Open-Guardian fails closed:
+
+- Key present but manifest missing/invalid: startup fails.
+- Manifest present but key missing: startup fails.
+- Signed rule changed or deleted: startup fails.
+
+`rules/.manifest.json` is machine-specific and gitignored. Keep the same HMAC key available to the service; do not commit it.
+
+## CLI
+
+```text
+open-guardian start [--bind IP] [--port PORT] [--upstream URL] [--local] [--verbose]
+open-guardian audit [PATH]
+open-guardian sign [RULES_DIR]
+open-guardian service install|uninstall|start|stop
+open-guardian secret set|delete '{{secret:keychain://logical/path#field}}'
+```
+
+- `start` runs the proxy.
+- `audit` performs a shallow local check for selected sensitive config files and obvious public binds; it is not a full security scanner.
+- `sign` writes the local HMAC rule manifest.
+- `service` integrates with the native service manager.
+- `secret` provisions or removes an exact entry in Open-Guardian's native keychain namespace.
+
+`--bind 0.0.0.0` is an explicit exposure decision. The current server has no LAN authentication layer; do not publish it directly to the internet.
+
+## Logging and audit data
+
+Application logs rotate daily under `logs/` beside the executable. Security events can be written as JSONL through `security.audit_log_path`.
+
+Current audit events contain timestamp, event type, path, category, score/severity, and risk tags. They must not contain prompts, secret values, authorization headers, or DLP mappings. New log fields require security review.
+
+## Development
+
+Run the complete gate before committing:
+
+```bash
+cargo fmt -- --check
+cargo test --all-targets --locked
+cargo clippy --all-targets --all-features --locked -- -D warnings
+cargo check --all-targets --no-default-features --locked
+cargo build --release --locked
+git diff --check
+```
+
+Security-sensitive changes should remain small and independently reviewable. At minimum, add tests for:
+
+- Parser rejection and boundary values.
+- Fail-closed configuration paths.
+- No secret in `Debug`, errors, logs, JSON, or request bodies.
+- Chunk/event boundary behavior.
+- Cross-request token isolation.
+- External-route opt-in and credential-header injection.
+- Platform-specific resource discovery.
+
+Do not add a secret backend that shells out, reads arbitrary paths, or prompts interactively from `resolve()`. Administrative operations belong in separate explicit APIs.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the contributor workflow. Code, security invariants, and this README are authoritative when older guidance conflicts.
+
+## Roadmap
+
+### v0.2.0 hardening
+
+- Complete request-field pipeline integration.
+- Local network and model routing defaults.
+- Response/SSE DLP closure.
+- Reversible request-scoped DLP.
+- Typed SecretBroker and provider credential migration.
+- Documentation, migration notes, and integration tests.
+
+### Native secrets
+
+- Cross-platform keychain resolution in a fixed application namespace.
+- Administrative set/delete CLI separate from request-time resolve; enumeration is intentionally unsupported.
+- Local authorization and reveal/copy UX contract.
+- Clipboard expiry where platform support is reliable.
+
+### Portable vault
+
+- Current: read-only age 0.12.1 backend and bounded versioned payload parser.
+- Remaining: independent `age`/`rage` golden interoperability fixtures.
+- Atomic writes and native rollback anchor.
+- Device pairing, recovery, revocation, and conflict handling.
+- Fuzz, corruption, heap-leak, and cross-platform tests.
+
+### Second-brain integration
+
+- A minimal adapter contract for scope/sensitivity metadata.
+- Explicit external-provider consent before routing private context.
+- SecretRef capsules that a UI can reveal without involving a model.
+- No direct shell/filesystem execution path from chat.
+
+## Threat model and non-goals
+
+Open-Guardian aims to reduce accidental egress, configuration mistakes, common prompt attacks, and credential handling inside model clients.
+
+It does not claim to:
+
+- Make an external provider private after data is intentionally sent.
+- Detect every secret or prompt injection.
+- Secure a compromised operating system or unlocked process.
+- Replace a password manager, endpoint protection, sandbox, or network firewall.
+- Decide whether a generated command is operationally safe to execute.
+- Erase historical ciphertext or secrets already revealed to a revoked device.
+
+The safest deployment is a local model, loopback listener, explicit routes, no autonomous execution, and a device you control.
+
+## License
+
+Apache-2.0. See [LICENSE](LICENSE).

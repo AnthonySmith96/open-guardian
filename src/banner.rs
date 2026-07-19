@@ -21,7 +21,11 @@ pub fn print_banner() {
     );
     println!(
         "   {}",
-        "Version 0.1.0 (Public Beta) — Licensed under Apache-2.0".bright_black()
+        format!(
+            "Version {} — Licensed under Apache-2.0",
+            env!("CARGO_PKG_VERSION")
+        )
+        .bright_black()
     );
     println!();
     println!(
@@ -40,12 +44,15 @@ pub fn print_startup_info(addr: &str, upstream: &str, action: &str, dlp: &str, m
     let width = 60;
     let line = "─".repeat(width).bright_black();
 
-    println!("{}{}{}", corner_tl, line, corner_tr);
+    println!("{corner_tl}{line}{corner_tr}");
     println!(
         "{}  {: <18}  {}",
         side,
         "🛡️  STATUS:".bright_green().bold(),
-        "SHIELD ACTIVE (v1.0.0)".on_green().black().bold()
+        format!("SHIELD ACTIVE (v{})", env!("CARGO_PKG_VERSION"))
+            .on_green()
+            .black()
+            .bold()
     );
     println!(
         "{}  {: <18}  {}",
@@ -77,7 +84,7 @@ pub fn print_startup_info(addr: &str, upstream: &str, action: &str, dlp: &str, m
         "🤖 AI JUDGE:".bright_white(),
         model.bright_magenta()
     );
-    println!("{}{}{}", corner_bl, line, corner_br);
+    println!("{corner_bl}{line}{corner_br}");
     println!();
 }
 

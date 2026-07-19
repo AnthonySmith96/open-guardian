@@ -215,7 +215,7 @@ impl PathSecurity {
                 canonical_path = Some(canonical_buf);
             }
             Err(e) => {
-                warnings.push(format!("Failed to canonicalize path: {}", e));
+                warnings.push(format!("Failed to canonicalize path: {e}"));
                 canonical_path = Some(path_obj.to_path_buf());
             }
         }

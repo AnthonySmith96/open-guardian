@@ -41,10 +41,10 @@ pub enum IntegrityError {
 impl std::fmt::Display for IntegrityError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            IntegrityError::IoError(e) => write!(f, "IO error: {}", e),
-            IntegrityError::HmacError(e) => write!(f, "HMAC error: {}", e),
-            IntegrityError::ManifestParseError(e) => write!(f, "Manifest parse error: {}", e),
-            IntegrityError::FileNotFound(p) => write!(f, "File not found: {}", p),
+            IntegrityError::IoError(e) => write!(f, "IO error: {e}"),
+            IntegrityError::HmacError(e) => write!(f, "HMAC error: {e}"),
+            IntegrityError::ManifestParseError(e) => write!(f, "Manifest parse error: {e}"),
+            IntegrityError::FileNotFound(p) => write!(f, "File not found: {p}"),
         }
     }
 }
@@ -158,7 +158,7 @@ pub fn verify_all_rules(
             Err(e) => {
                 failed_files.push(FailedFile {
                     path: filename.clone(),
-                    reason: format!("Verification error: {}", e),
+                    reason: format!("Verification error: {e}"),
                 });
                 tracing::error!("SEC: Rule file verification error for {}: {}", filename, e);
             }
@@ -303,8 +303,7 @@ pub mod emergency_kit {
         for pattern in critical_injection_patterns() {
             if upper.contains(&pattern.to_uppercase()) {
                 return Some(format!(
-                    "Emergency Kit: Critical injection pattern '{}'",
-                    pattern
+                    "Emergency Kit: Critical injection pattern '{pattern}'"
                 ));
             }
         }
@@ -312,8 +311,7 @@ pub mod emergency_kit {
         for pattern in critical_dlp_patterns() {
             if content.contains(pattern) {
                 return Some(format!(
-                    "Emergency Kit: Critical secret pattern '{}'",
-                    pattern
+                    "Emergency Kit: Critical secret pattern '{pattern}'"
                 ));
             }
         }

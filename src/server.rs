@@ -1,8 +1,9 @@
 use crate::banner;
 use crate::config::{JudgeConfig, PolicyAction, PolicyConfig, RouteConfig};
+use crate::pipeline::{extract_scan_targets, replace_scan_target};
 use crate::proxy::ProxyClient;
 use crate::security::{
-    analyze_injection, check_for_violations, redact_pii, DlpAction, Judge, ThreatEngine,
+    analyze_injection, check_for_violations, DlpAction, Judge, RedactionSession, ThreatEngine,
 };
 use axum::{
     body::Bytes,
@@ -14,12 +15,18 @@ use axum::{
 };
 use chrono::Utc;
 use colored::Colorize;
+#[cfg(feature = "native-keyring")]
+use open_guardian::secrets::KeychainBackend;
+#[cfg(feature = "portable-vault")]
+use open_guardian::secrets::PortableVaultBackend;
+use open_guardian::secrets::{EnvironmentBackend, SecretBroker, SecretRef};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
 pub struct ServerConfig {
+    pub bind_address: String,
     pub port: u16,
     pub default_upstream: String,
     pub routes: HashMap<String, RouteConfig>,
@@ -35,6 +42,7 @@ pub struct ServerConfig {
     pub load_balancer: Option<crate::config::LoadBalancerConfig>,
     /// Security configuration for hardening options.
     pub security: Option<crate::config::SecurityConfig>,
+    pub vault: Option<crate::config::VaultConfig>,
 }
 
 #[derive(Clone)]
@@ -64,16 +72,13 @@ async fn health_handler() -> impl IntoResponse {
     (StatusCode::OK, "OK\n")
 }
 
-fn get_hmac_key() -> String {
+fn get_hmac_key() -> anyhow::Result<Option<String>> {
     match std::env::var("GUARDIAN_HMAC_KEY") {
-        Ok(key) if !key.is_empty() => key,
-        _ => {
-            if cfg!(debug_assertions) {
-                tracing::warn!("SEC: GUARDIAN_HMAC_KEY not set — using insecure dev key. DO NOT USE IN PRODUCTION.");
-                "insecure-dev-only-key".to_string()
-            } else {
-                panic!("FATAL: GUARDIAN_HMAC_KEY environment variable must be set in release mode");
-            }
+        Ok(key) if !key.is_empty() => Ok(Some(key)),
+        Ok(_) => Err(anyhow::anyhow!("GUARDIAN_HMAC_KEY cannot be empty")),
+        Err(std::env::VarError::NotPresent) => Ok(None),
+        Err(std::env::VarError::NotUnicode(_)) => {
+            Err(anyhow::anyhow!("GUARDIAN_HMAC_KEY is not valid Unicode"))
         }
     }
 }
@@ -82,7 +87,34 @@ pub async fn start_server(
     config: ServerConfig,
     shutdown_token: tokio_util::sync::CancellationToken,
 ) -> anyhow::Result<()> {
-    let proxy = ProxyClient::new(config.timeout_seconds)?;
+    let mut secret_broker = SecretBroker::new();
+    secret_broker.register(EnvironmentBackend)?;
+    #[cfg(feature = "native-keyring")]
+    secret_broker.register(KeychainBackend)?;
+    if let Some(vault) = config.vault.as_ref() {
+        #[cfg(feature = "portable-vault")]
+        {
+            let identity = secret_broker
+                .resolve(&vault.identity)
+                .await
+                .map_err(|error| {
+                    anyhow::anyhow!("failed to resolve portable vault device identity: {error}")
+                })?;
+            let backend = PortableVaultBackend::new(&vault.path, identity)?;
+            secret_broker.register(backend)?;
+            tracing::warn!(
+                "SEC: portable vault is read-only and has no rollback anchor in this prototype"
+            );
+        }
+        #[cfg(not(feature = "portable-vault"))]
+        {
+            let _ = vault;
+            return Err(anyhow::anyhow!(
+                "guardian.toml configures [vault], but this binary lacks the portable-vault feature"
+            ));
+        }
+    }
+    let proxy = ProxyClient::new(config.timeout_seconds, Arc::new(secret_broker))?;
     let judge = Judge::new(config.judge_config.clone());
 
     // ── Layer 0: Rule File Integrity Verification ──
@@ -92,18 +124,19 @@ pub async fn start_server(
         .dictionaries
         .first()
         .and_then(|d| {
-            std::path::Path::new(&d.path)
+            crate::config::resolve_resource_path(&d.path)
+                .as_path()
                 .parent()
                 .map(|p| p.to_path_buf())
         })
         .unwrap_or_else(|| std::path::PathBuf::from("."));
 
-    let integrity_checker = crate::security::integrity::RuleIntegrityChecker::new(
-        &rules_dir,
-        &get_hmac_key(),
-        false, // Emergency kit disabled by default
-    );
-    if let Ok(checker) = integrity_checker {
+    let manifest_exists = rules_dir.join(".manifest.json").is_file();
+    if let Some(hmac_key) = get_hmac_key()? {
+        let checker = crate::security::integrity::RuleIntegrityChecker::new(
+            &rules_dir, &hmac_key, false, // Emergency kit disabled by default
+        )
+        .map_err(|error| anyhow::anyhow!("failed to initialize rule integrity: {error}"))?;
         let result = checker.verify();
         if !result.verified {
             banner::print_error(&format!(
@@ -114,8 +147,15 @@ pub async fn start_server(
                 "Security: Rule file integrity verification failed"
             ));
         }
+    } else if manifest_exists {
+        return Err(anyhow::anyhow!(
+            "rules/.manifest.json exists but GUARDIAN_HMAC_KEY is unavailable"
+        ));
+    } else {
+        tracing::warn!(
+            "SEC: rule integrity is not configured; run `open-guardian sign` with GUARDIAN_HMAC_KEY to enable it"
+        );
     }
-    // If integrity checker fails to initialize (e.g., no manifest), continue (optional warning)
 
     let threat_engine = ThreatEngine::new(
         &config.policies.dictionaries,
@@ -148,7 +188,14 @@ pub async fn start_server(
         .route("/*path", any(handler))
         .with_state(state.clone());
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], config.port));
+    let bind_ip = config.bind_address.parse().map_err(|error| {
+        anyhow::anyhow!(
+            "invalid server.bind_address '{}': {}",
+            config.bind_address,
+            error
+        )
+    })?;
+    let addr = SocketAddr::new(bind_ip, config.port);
     let model_info = if config.judge_config.ai_judge_enabled.unwrap_or(false) {
         config
             .judge_config
@@ -163,8 +210,8 @@ pub async fn start_server(
     banner::print_startup_info(
         &addr.to_string(),
         &config.default_upstream,
-        &format!("{:?}", default_action),
-        &format!("{:?}", dlp_action),
+        &format!("{default_action:?}"),
+        &format!("{dlp_action:?}"),
         &model_info,
     );
 
@@ -183,25 +230,6 @@ pub async fn start_server(
     Ok(())
 }
 
-fn extract_full_content(content: &Value) -> String {
-    if let Some(s) = content.as_str() {
-        return s.to_string();
-    }
-
-    if let Some(parts) = content.as_array() {
-        let mut full_text = String::new();
-        for part in parts {
-            if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
-                full_text.push_str(text);
-                full_text.push(' ');
-            }
-        }
-        return full_text.trim().to_string();
-    }
-
-    String::new()
-}
-
 fn log_security_event(path: Option<String>, event: Value) {
     tokio::spawn(async move {
         if let Some(log_path) = path {
@@ -213,7 +241,7 @@ fn log_security_event(path: Option<String>, event: Value) {
                     .open(log_path)
                     .await
                 {
-                    let _ = file.write_all(format!("{}\n", line).as_bytes()).await;
+                    let _ = file.write_all(format!("{line}\n").as_bytes()).await;
                 }
             }
         }
@@ -235,6 +263,17 @@ fn block_response(category: &str, detail: &str, message: &str) -> Response {
         body,
     )
         .into_response()
+}
+
+fn contains_proxy_path_traversal(path: &str) -> bool {
+    let lowercase = path.to_ascii_lowercase();
+    path.contains('\0')
+        || path.contains('\\')
+        || path.contains("//")
+        || path.split('/').any(|segment| segment == "..")
+        || lowercase.contains("%2e%2e")
+        || lowercase.contains("%2e%2f")
+        || lowercase.contains("%2f%2e")
 }
 
 // ================================================================
@@ -259,7 +298,7 @@ async fn handler(
     body: Bytes,
 ) -> Response {
     let global_start = std::time::Instant::now();
-    let path_str = format!("/{}", path);
+    let path_str = format!("/{path}");
     tracing::info!("{} request to {}", method, path_str);
 
     if state.verbose {
@@ -278,7 +317,7 @@ async fn handler(
         let block_reason = header_result
             .reason
             .unwrap_or_else(|| "Unknown smuggling attempt".to_string());
-        banner::print_warning(&format!("Request smuggling attempt: {}", block_reason));
+        banner::print_warning(&format!("Request smuggling attempt: {block_reason}"));
         log_security_event(
             state.audit_log_path.clone(),
             serde_json::json!({
@@ -295,32 +334,19 @@ async fn handler(
     }
 
     // ── Path Security ──
-    // Only validate paths that contain suspicious patterns (traversal attempts)
-    // Skip API routes like /v1/chat/completions which start with /
-    let is_api_route = path_str.starts_with("/v1/") || path_str.starts_with("/api/");
-    let has_traversal =
-        path_str.contains("..") || path_str.contains("~") || path_str.contains("//");
-
-    if !is_api_route && has_traversal {
-        let path_validation = crate::security::path_security::validate_path(&path_str);
-        if !path_validation.valid {
-            let error_msg = path_validation
-                .errors
-                .iter()
-                .map(|e| format!("{:?}", e))
-                .collect::<Vec<_>>()
-                .join(", ");
-            banner::print_warning(&format!("Path traversal blocked: {}", error_msg));
-            log_security_event(
-                state.audit_log_path.clone(),
-                serde_json::json!({
-                    "timestamp": Utc::now().to_rfc3339(),
-                    "event": "path_traversal_blocked",
-                    "path": path_str
-                }),
-            );
-            return block_response("Security", "path_traversal", "Invalid request path");
-        }
+    // API prefixes do not exempt traversal. The path is forwarded to another
+    // HTTP service, so filesystem canonicalization is neither needed nor safe.
+    if contains_proxy_path_traversal(&path_str) {
+        banner::print_warning("Path traversal blocked");
+        log_security_event(
+            state.audit_log_path.clone(),
+            serde_json::json!({
+                "timestamp": Utc::now().to_rfc3339(),
+                "event": "path_traversal_blocked",
+                "path": path_str
+            }),
+        );
+        return block_response("Security", "path_traversal", "Invalid request path");
     }
 
     // ── Rate Limiting ──
@@ -346,6 +372,7 @@ async fn handler(
 
     // ── Parse JSON body ──
     if let Ok(mut json_body) = serde_json::from_slice::<Value>(&body) {
+        let mut redaction_session = RedactionSession::new();
         let model_alias = json_body
             .get("model")
             .and_then(|m| m.as_str())
@@ -370,30 +397,20 @@ async fn handler(
         let mut upstream_url = route
             .map(|r| r.url.clone())
             .unwrap_or_else(|| state.default_upstream.clone());
-        // We own the key_env as a String so it can be replaced by the SLB
-        // (Addendum 1: the SLB must swap the key when it changes the tier).
-        let mut effective_key_env: Option<String> =
-            route.and_then(|r| r.key_env.as_ref().map(|s| s.to_string()));
+        // The SLB may replace this opaque reference when it changes provider.
+        let mut effective_credential: Option<SecretRef> =
+            route.and_then(|route| route.credential.clone());
 
-        let mut modified = true;
         let mut risk_level: Option<&str> = None; // For X-Guardian-Risk header in audit mode
 
         // Accumulates message content for SLB scoring — populated during the scan
         // loop below (Addendum 2: reuse already-parsed text, never re-read the stream).
         let mut content_for_slb = String::new();
 
-        if let Some(messages) = json_body.get_mut("messages").and_then(|m| m.as_array_mut()) {
-            for message in messages {
-                let role = message
-                    .get("role")
-                    .and_then(|r| r.as_str())
-                    .unwrap_or("user");
-                if role != "user" && role != "system" {
-                    continue;
-                }
-
-                let content_raw = message.get("content").unwrap_or(&Value::Null);
-                let content_text = extract_full_content(content_raw);
+        let scan_targets = extract_scan_targets(&json_body);
+        if !scan_targets.is_empty() {
+            for target in scan_targets {
+                let content_text = target.raw.clone();
 
                 if content_text.is_empty() {
                     continue;
@@ -448,7 +465,7 @@ async fn handler(
                 }
 
                 // Redaction Process
-                let cleaned = redact_pii(&content_text, Some(&state.dlp_config));
+                let cleaned = redaction_session.redact(&content_text, Some(&state.dlp_config));
                 if state.verbose {
                     println!(
                         "   {} DLP redact check: {:?}",
@@ -459,12 +476,9 @@ async fn handler(
 
                 if cleaned != content_text {
                     banner::print_success(&format!(
-                        "Redacted sensitive data in request to {}",
-                        path_str
+                        "Redacted sensitive data in request to {path_str}"
                     ));
                     tracing::info!("DLP redaction applied for request to {}", path_str);
-                    modified = true;
-
                     log_security_event(
                         state.audit_log_path.clone(),
                         serde_json::json!({
@@ -474,32 +488,20 @@ async fn handler(
                         }),
                     );
 
-                    // Update the message content with redacted text
-                    if let Some(content_val) = message.get_mut("content") {
-                        if content_val.is_string() {
-                            *content_val = Value::String(cleaned.clone());
-                        } else if let Some(parts) = content_val.as_array_mut() {
-                            for part in parts {
-                                if let Some(text_val) = part.get("text").and_then(|t| t.as_str()) {
-                                    let part_cleaned =
-                                        redact_pii(text_val, Some(&state.dlp_config));
-                                    if let Some(t) = part.get_mut("text") {
-                                        *t = Value::String(part_cleaned);
-                                    }
-                                }
-                            }
-                        }
+                    if !replace_scan_target(&mut json_body, &target, cleaned.clone()) {
+                        tracing::error!(
+                            "SECURITY: failed to apply DLP redaction at {}",
+                            target.json_pointer
+                        );
+                        return block_response(
+                            "security_policy",
+                            "redaction_failed",
+                            "Access Denied: sensitive data could not be safely redacted",
+                        );
                     }
                 }
 
-                // Get current content text (possibly redacted)
-                let current_content =
-                    extract_full_content(message.get("content").unwrap_or(&Value::Null));
-                let scan_text = if current_content.is_empty() {
-                    &content_text
-                } else {
-                    &current_content
-                };
+                let scan_text = &cleaned;
 
                 // ── Unicode Normalization ──
                 // Normalize Unicode text to prevent homograph attacks and obfuscation
@@ -573,7 +575,7 @@ async fn handler(
                 // LAYER 1: HARD SHIELD (Deterministic Block)
                 if scan_result.blocked {
                     let tags_str = scan_result.risk_tags.join(", ");
-                    banner::print_warning(&format!("BLOCK (Severity 90+): {}", tags_str));
+                    banner::print_warning(&format!("BLOCK (Severity 90+): {tags_str}"));
 
                     log_security_event(
                         state.audit_log_path.clone(),
@@ -598,7 +600,7 @@ async fn handler(
                             return block_response(
                                 "CriticalThreat",
                                 "threat_signature_blocked",
-                                &format!("Access Denied: Critical Threat Detected ({})", tags_str),
+                                &format!("Access Denied: Critical Threat Detected ({tags_str})"),
                             );
                         }
                     }
@@ -633,8 +635,7 @@ async fn handler(
 
                     if !judge_passed {
                         banner::print_error(&format!(
-                            "AI Judge blocked request to {}: Violates Safety Policy",
-                            path_str
+                            "AI Judge blocked request to {path_str}: Violates Safety Policy"
                         ));
                         tracing::error!(
                             "Semantic policy block by AI Judge for request to {}",
@@ -654,7 +655,9 @@ async fn handler(
                         match state.default_action {
                             PolicyAction::Audit => {
                                 risk_level = Some("High");
-                                tracing::warn!("AUDIT: AI Judge flagged request but forwarding per audit policy");
+                                tracing::warn!(
+                                    "AUDIT: AI Judge flagged request but forwarding per audit policy"
+                                );
                             }
                             PolicyAction::Allow => {
                                 tracing::warn!(
@@ -699,16 +702,14 @@ async fn handler(
                 // Hard Override (Addendum 3): SLB is authoritative.
                 upstream_url = decision.upstream_url;
 
-                // Addendum 1 — Header Swap: Replace key_env with the tier's key.
-                // If we left the old key, the new upstream would return 401.
-                effective_key_env = decision.key_env;
+                // Credential swap is mandatory when the selected provider changes.
+                effective_credential = decision.credential;
 
                 // Rewrite model in JSON body if tier specifies one.
                 if let Some(ref slb_model) = decision.model {
                     if let Some(m_val) = json_body.get_mut("model") {
                         *m_val = serde_json::Value::String(slb_model.clone());
                     }
-                    modified = true;
                 }
             }
         }
@@ -716,27 +717,36 @@ async fn handler(
         // ════════════════════════════════════════════════════
         // LAYER 3: FINAL EXECUTION
         // ════════════════════════════════════════════════════
-        let final_body = if modified {
-            Bytes::from(serde_json::to_vec(&json_body).unwrap_or_else(|_| body.to_vec()))
-        } else {
-            body.clone()
+        let final_body = match serde_json::to_vec(&json_body) {
+            Ok(serialized) => Bytes::from(serialized),
+            Err(_) => {
+                tracing::error!(
+                    "SECURITY: inspected request could not be serialized; refusing original body"
+                );
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    [(axum::http::header::CONTENT_TYPE, "application/json")],
+                    "{\"error\":\"request_serialization_failed\"}\n",
+                )
+                    .into_response();
+            }
         };
 
         banner::print_step(&format!(
-            "Forwarding to [{}] target: {}...",
-            model_alias, upstream_url
+            "Forwarding to [{model_alias}] target: {upstream_url}..."
         ));
         let response = match state
             .proxy
             .forward_request(crate::proxy::ForwardOptions {
                 upstream_url: &upstream_url,
-                api_key_env: effective_key_env.as_deref(),
+                credential: effective_credential.as_ref(),
                 method,
                 path: &path_str,
                 headers,
                 body: final_body,
                 dlp_config: Some(&state.dlp_config),
                 dlp_action: state.dlp_action,
+                redactions: redaction_session,
             })
             .await
         {
@@ -761,10 +771,10 @@ async fn handler(
                 }
             }
             Err(e) => {
-                banner::print_error(&format!("Internal Proxy Error: {}", e));
+                banner::print_error(&format!("Internal Proxy Error: {e}"));
                 let error_msg = serde_json::json!({
                     "error": "proxy_internal_error",
-                    "message": format!("Internal failure in proxy: {}", e)
+                    "message": "Internal proxy failure"
                 });
                 let body = serde_json::to_string(&error_msg).unwrap_or_default() + "\n";
                 (
@@ -794,8 +804,7 @@ async fn handler(
         if !state.security_config.allow_non_json_passthrough {
             // SECURITY: Default-deny non-JSON requests
             banner::print_blocking(&format!(
-                "Non-JSON request to {}: BLOCKED (security policy)",
-                path_str
+                "Non-JSON request to {path_str}: BLOCKED (security policy)"
             ));
             tracing::warn!(
                 "SECURITY: Non-JSON request blocked. Set allow_non_json_passthrough=true to allow (not recommended)."
@@ -809,17 +818,24 @@ async fn handler(
 
         // Passthrough mode enabled (explicit opt-in, NOT recommended for security)
         banner::print_warning(&format!(
-            "Non-JSON passthrough enabled (SECURITY RISK): {}",
-            path_str
+            "Non-JSON passthrough enabled (SECURITY RISK): {path_str}"
         ));
         tracing::warn!("SECURITY: Non-JSON passthrough enabled — security checks bypassed!");
 
         // Even in passthrough mode, attempt basic DLP on raw bytes
-        let body_str = String::from_utf8_lossy(&body);
-        if let Some(violation) = check_for_violations(&body_str, Some(&state.dlp_config)) {
+        let body_str = match std::str::from_utf8(&body) {
+            Ok(body) => body,
+            Err(_) => {
+                return block_response(
+                    "security_policy",
+                    "non_json_not_utf8",
+                    "Non-JSON request cannot be safely inspected as UTF-8",
+                );
+            }
+        };
+        if let Some(violation) = check_for_violations(body_str, Some(&state.dlp_config)) {
             banner::print_warning(&format!(
-                "DLP violation detected in non-JSON body to {}",
-                path_str
+                "DLP violation detected in non-JSON body to {path_str}"
             ));
             if state.dlp_action == DlpAction::Block {
                 return block_response(
@@ -830,27 +846,31 @@ async fn handler(
             }
         }
 
+        let mut redaction_session = RedactionSession::new();
+        let redacted_body = redaction_session.redact(body_str, Some(&state.dlp_config));
+
         let upstream_url = state.default_upstream.clone();
         let response = match state
             .proxy
             .forward_request(crate::proxy::ForwardOptions {
                 upstream_url: &upstream_url,
-                api_key_env: None,
+                credential: None,
                 method,
                 path: &path_str,
                 headers,
-                body,
+                body: Bytes::from(redacted_body),
                 dlp_config: Some(&state.dlp_config),
                 dlp_action: state.dlp_action,
+                redactions: redaction_session,
             })
             .await
         {
             Ok(res) => res,
             Err(e) => {
-                banner::print_error(&format!("Internal Proxy Error: {}", e));
+                banner::print_error(&format!("Internal Proxy Error: {e}"));
                 let error_msg = serde_json::json!({
                     "error": "proxy_internal_error",
-                    "message": format!("Internal failure in proxy: {}", e)
+                    "message": "Internal proxy failure"
                 });
                 let body = serde_json::to_string(&error_msg).unwrap_or_default() + "\n";
                 (
@@ -864,8 +884,7 @@ async fn handler(
 
         if state.verbose {
             banner::print_warning(&format!(
-                "Non-JSON passthrough to {}: SECURITY BYPASSED",
-                path_str
+                "Non-JSON passthrough to {path_str}: SECURITY BYPASSED"
             ));
             println!(
                 "{} Total processed (Passthrough) in {:?}",
@@ -874,5 +893,26 @@ async fn handler(
             );
         }
         response
+    }
+}
+
+#[cfg(test)]
+mod path_tests {
+    use super::contains_proxy_path_traversal;
+
+    #[test]
+    fn api_prefix_never_exempts_traversal() {
+        for path in [
+            "/v1/../admin",
+            "/v1/%2e%2e/admin",
+            "/api/%2E%2Fadmin",
+            "/v1\\..\\admin",
+            "/v1//admin",
+        ] {
+            assert!(contains_proxy_path_traversal(path), "accepted {path}");
+        }
+
+        assert!(!contains_proxy_path_traversal("/v1/chat/completions"));
+        assert!(!contains_proxy_path_traversal("/api/models/qwen3:8b"));
     }
 }

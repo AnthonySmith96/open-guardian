@@ -6,6 +6,7 @@
 //! The score is computed in microseconds — no LLM calls, no network, no latency overhead.
 
 use crate::config::LoadBalancerConfig;
+use open_guardian::secrets::SecretRef;
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Routing Tier
@@ -42,9 +43,8 @@ pub struct RoutingDecision {
     pub tier: RoutingTier,
     /// Upstream base URL for the selected tier.
     pub upstream_url: String,
-    /// Environment variable name holding the API key (if any).
-    /// Caller **must** use this to inject the correct `Authorization` header.
-    pub key_env: Option<String>,
+    /// Opaque credential resolved only at the upstream transport boundary.
+    pub credential: Option<SecretRef>,
     /// Model to rewrite in the JSON body (if any).
     pub model: Option<String>,
 }
@@ -126,7 +126,7 @@ pub fn route(text: &str, config: &LoadBalancerConfig) -> RoutingDecision {
             score,
             tier: RoutingTier::Smart,
             upstream_url: tier_cfg.url.clone(),
-            key_env: tier_cfg.key_env.clone(),
+            credential: tier_cfg.credential.clone(),
             model: tier_cfg.model.clone(),
         }
     } else {
@@ -136,7 +136,7 @@ pub fn route(text: &str, config: &LoadBalancerConfig) -> RoutingDecision {
             score,
             tier: RoutingTier::Fast,
             upstream_url: tier_cfg.url.clone(),
-            key_env: tier_cfg.key_env.clone(),
+            credential: tier_cfg.credential.clone(),
             model: tier_cfg.model.clone(),
         }
     }
@@ -162,8 +162,7 @@ mod tests {
         let score = calculate_complexity("Hello, how are you?");
         assert!(
             score < 40,
-            "Simple greeting should score below 40, got {}",
-            score
+            "Simple greeting should score below 40, got {score}"
         );
     }
 
@@ -174,8 +173,7 @@ mod tests {
         );
         assert!(
             score >= 40,
-            "Complex technical prompt should score >= 40, got {}",
-            score
+            "Complex technical prompt should score >= 40, got {score}"
         );
     }
 
@@ -186,9 +184,7 @@ mod tests {
             calculate_complexity("explain sorting\n```python\ndef bubble_sort(lst): pass\n```");
         assert!(
             with_block > without,
-            "Code block should increase score: {} vs {}",
-            with_block,
-            without
+            "Code block should increase score: {with_block} vs {without}"
         );
     }
 
@@ -205,8 +201,7 @@ mod tests {
         let score = calculate_complexity("rust debug refactor");
         assert!(
             score >= 70,
-            "Three keywords should yield >= 70, got {}",
-            score
+            "Three keywords should yield >= 70, got {score}"
         );
     }
 }

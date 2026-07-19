@@ -3,90 +3,135 @@ name: Release
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
 
 permissions:
-  contents: write
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_NET_RETRY: 10
 
 jobs:
+  verify:
+    name: Verify release metadata
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Require tag to match Cargo package version
+        shell: bash
+        run: |
+          crate_version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)"
+          test -n "$crate_version"
+          test "v$crate_version" = "$GITHUB_REF_NAME"
+
   build:
-    name: Build - ${{ matrix.platform.os-name }} (${{ matrix.platform.arch }})
+    name: Build ${{ matrix.platform.label }}
+    needs: verify
+    runs-on: ${{ matrix.platform.os }}
     strategy:
+      fail-fast: false
       matrix:
         platform:
-          - os-name: linux
+          - label: Linux x86_64
             os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            bin: open-guardian
-            name: open-guardian-linux-amd64.tar.gz
-          - os-name: windows
+            binary: open-guardian
+            archive: open-guardian-linux-amd64.tar.gz
+            format: tar
+          - label: Windows x86_64
             os: windows-latest
             target: x86_64-pc-windows-msvc
-            bin: open-guardian.exe
-            name: open-guardian-windows-amd64.zip
-          - os-name: macos-intel
+            binary: open-guardian.exe
+            archive: open-guardian-windows-amd64.zip
+            format: zip
+          - label: macOS Intel
             os: macos-latest
             target: x86_64-apple-darwin
-            bin: open-guardian
-            name: open-guardian-macos-amd64.tar.gz
-          - os-name: macos-arm
+            binary: open-guardian
+            archive: open-guardian-macos-amd64.tar.gz
+            format: tar
+          - label: macOS Apple Silicon
             os: macos-latest
             target: aarch64-apple-darwin
-            bin: open-guardian
-            name: open-guardian-macos-arm64.tar.gz
-
-    runs-on: ${{ matrix.platform.os }}
+            binary: open-guardian
+            archive: open-guardian-macos-arm64.tar.gz
+            format: tar
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - name: Checkout source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install minimum supported Rust
+        uses: dtolnay/rust-toolchain@39b0b3842c7e8bbf6904c0bfc3d9006fdd4dc4e0 # 1.88.0
         with:
           targets: ${{ matrix.platform.target }}
 
-      - name: Build Binary
-        run: cargo build --release --target ${{ matrix.platform.target }}
+      - name: Build locked release binary
+        run: cargo build --release --locked --target ${{ matrix.platform.target }}
 
-      - name: Package (Unix)
-        if: matrix.platform.os != 'windows-latest'
+      - name: Stage Unix package
+        if: matrix.platform.format == 'tar'
+        shell: bash
         run: |
-          cd target/${{ matrix.platform.target }}/release
-          tar czf ../../../${{ matrix.platform.name }} ${{ matrix.platform.bin }}
-          cd -
+          package="dist/open-guardian"
+          mkdir -p "$package/rules" "$package/docs/adr"
+          cp "target/${{ matrix.platform.target }}/release/${{ matrix.platform.binary }}" "$package/"
+          cp guardian.toml README.md CHANGELOG.md LICENSE "$package/"
+          cp rules/*.json "$package/rules/"
+          cp docs/adr/*.md "$package/docs/adr/"
+          tar -C dist -czf "dist/${{ matrix.platform.archive }}" open-guardian
 
-      - name: Package (Windows)
-        if: matrix.platform.os == 'windows-latest'
+      - name: Stage Windows package
+        if: matrix.platform.format == 'zip'
         shell: pwsh
         run: |
-          cd target\${{ matrix.platform.target }}\release
-          Compress-Archive -Path ${{ matrix.platform.bin }} -DestinationPath ..\..\..\${{ matrix.platform.name }}
-          cd ..\..\..
+          $package = "dist/open-guardian"
+          New-Item -ItemType Directory -Force "$package/rules", "$package/docs/adr" | Out-Null
+          Copy-Item "target/${{ matrix.platform.target }}/release/${{ matrix.platform.binary }}" $package
+          Copy-Item guardian.toml, README.md, CHANGELOG.md, LICENSE $package
+          Copy-Item rules/*.json "$package/rules/"
+          Copy-Item docs/adr/*.md "$package/docs/adr/"
+          Compress-Archive -Path $package -DestinationPath "dist/${{ matrix.platform.archive }}"
 
-      - name: Upload Artifacts
-        uses: actions/upload-artifact@v4
+      - name: Upload package
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: ${{ matrix.platform.name }}
-          path: ${{ matrix.platform.name }}
+          name: ${{ matrix.platform.archive }}
+          path: dist/${{ matrix.platform.archive }}
+          if-no-files-found: error
+          retention-days: 7
 
   release:
-    name: Create Release
+    name: Publish verified release
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Download Artifacts
-        uses: actions/download-artifact@v4
+      - name: Download packages
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: artifacts
           merge-multiple: true
 
-      - name: Create Release
-        uses: softprops/action-gh-release@v1
+      - name: Generate SHA-256 checksums
+        shell: bash
+        working-directory: artifacts
+        run: sha256sum * > SHA256SUMS
+
+      - name: Attest package provenance
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-path: artifacts/*
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           files: artifacts/*
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          fail_on_unmatched_files: true
+          generate_release_notes: true

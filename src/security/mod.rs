@@ -16,7 +16,7 @@ pub mod rate_limit;
 #[allow(dead_code)]
 pub mod smuggling;
 
-pub use dlp::{check_for_violations, redact_pii, DlpAction};
+pub use dlp::{check_for_violations, redact_pii, DlpAction, DlpViolation, RedactionSession};
 pub use injection_scanner::analyze_injection;
 pub use judge::Judge;
 pub use normalizer::normalize_unicode;

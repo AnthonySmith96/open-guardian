@@ -1,209 +1,171 @@
-# Contributing to Open-GuardIAn
+# Contributing to Open-Guardian
 
-Thank you for your interest in contributing to Open-GuardIAn! This document provides guidelines for contributing code, threat signatures, documentation, and other improvements.
+Open-Guardian handles model egress and secret material. Changes should be small, testable, and reviewable without trusting a large refactor.
 
----
+## Principles
 
-## 🧭 Project Philosophy
+1. **Local first.** A fresh/default configuration binds to loopback and routes to a local model.
+2. **Deterministic boundary.** Routing, credentials, DLP, authorization, and policy do not depend on an LLM decision.
+3. **No autonomous execution.** The proxy classifies text; it does not execute generated commands.
+4. **Secret values stay out of models and generic DTOs.** Models may see `SecretRef`, never `SecretValue`.
+5. **Fail closed at boundaries.** Invalid config, credentials, redaction application, integrity, and bounded response inspection stop the operation.
+6. **Runbooks remain discussable.** `audit` is the default control-plane policy; strict `block` remains explicit.
+7. **No invented cryptography.** Portable vault work follows accepted ADRs and interoperability tests.
 
-Before contributing, understand our core principles:
+## Setup
 
-1. **Agent-First** — We enable AI Agents to use tools, not block them blindly. `rm -rf /tmp/cache` for cleanup is legitimate. `rm -rf /` without context is not.
-2. **Layered Defense** — Layer 1 (DLP + Regex) must work 100% without GPU. Layer 3 (AI Judge) is optional backup.
-3. **Performance** — We compete against Python gateways. Heuristic checks must be sub-millisecond. Never add blocking I/O to the hot path.
-4. **Fail-Safe** — The system must be secure even if all config files are deleted.
+Requirements:
 
----
-
-## 🚀 Getting Started
-
-### Prerequisites
-
-- [Rust](https://rustup.rs/) (1.70+)
-- (Optional) [Ollama](https://ollama.ai/) running locally for AI Judge testing.
-  - Recommended for testing: `ollama pull qwen2.5:0.5b`
-  - Note: You can run tests without Ollama, but integration tests for Layer 3 will be skipped or mocked.
-
-### Development Setup
+- Rust 1.88 or newer.
+- No model server is required for unit tests.
+- Ollama is optional for manual local-proxy testing.
 
 ```bash
-# Clone the repo
 git clone https://github.com/AnthonySmith96/open-guardian.git
 cd open-guardian
 
-# Build in debug mode (faster compile)
-cargo build
-
-# Run tests
-cargo test
-
-# Run with verbose output
-cargo run -- start --verbose
+cargo test --all-targets --locked
+cargo clippy --all-targets --all-features --locked -- -D warnings
+cargo check --all-targets --no-default-features --locked
 ```
 
-### Project Structure
+## Required gate
 
-```
-src/
-├── security/
-│   ├── dlp.rs              # DLP Anonymizer — PII/Secret detection & redaction
-│   ├── normalizer.rs       # Code-aware text normalization (lowercase, de-accent)
-│   ├── injection_scanner.rs # Adversarial pattern scoring engine
-│   ├── threat_engine.rs    # Signature database + Emergency Kit + RAG retrieval
-│   └── judge.rs            # AI Judge (qwen3:4b via Ollama)
-├── server.rs               # Axum server & 3-layer pipeline orchestrator
-├── config.rs               # TOML config loader
-└── main.rs                 # CLI entry point
-rules/                      # Modular threat dictionaries (JSON)
-guardian.toml               # Runtime configuration
-```
-
----
-
-## 📋 How To Contribute
-
-### 1. Adding Threat Signatures
-
-This is the **easiest** and **most impactful** way to contribute.
-
-**Where**: `rules/` directory
-
-**Format**:
-```json
-{
-  "signatures": [
-    {
-      "id": "UNIQUE-ID-001",
-      "pattern": "your normalized pattern",
-      "category": "CategoryName",
-      "severity": 80,
-      "is_regex": false
-    }
-  ]
-}
-```
-
-**Rules for patterns**:
-- All patterns must be **NORMALIZED**: lowercase, no accents (`ñ` → `n`, `é` → `e`), no leetspeak
-- The normalizer preserves code syntax: `{ } ( ) [ ] . , ; : / \ < > = + - * & | ^ % $ @ # ! ? " ' ~`
-- Test your pattern against the normalizer: `cargo test -- normalizer`
-
-**Severity guide**:
-
-| Severity | When to use | Examples |
-|----------|------------|---------|
-| 100 | Always block. Active exploit. | `cat /etc/passwd`, `drop table`, `{{7*7}}` |
-| 95 | Always block. Jailbreak/prompt leak. | `ignore previous instructions`, `god mode` |
-| 80 | Tag & Audit. Risky tool (Agent-First). | `rm -rf`, `curl`, `wget`, `chmod` |
-| 70 | Context signal. Suspicious topic. | `hacker`, `malware`, `act as` |
-
-**Adding a new language/category**:
-1. Create `rules/jailbreaks_fr.json` (or your language)
-2. Add to `guardian.toml`:
-   ```toml
-   [[security.dictionaries]]
-   id = "jailbreaks_fr"
-   path = "rules/jailbreaks_fr.json"
-   enabled = true
-   ```
-3. Submit a PR with test evidence
-
----
-
-### 2. Adding DLP Patterns
-
-**Where**: `src/security/dlp.rs`
-
-To add a new secret/PII pattern:
-1. Add a `OnceLock<Regex>` static at the top
-2. Create an `fn your_re()` helper function
-3. Add the pattern to `check_for_violations()` and `redact_pii()`
-4. Use an appropriate anonymizer token (e.g., `<YOUR_TOKEN>`)
-5. Add tests
-
-**Token naming convention**: `<TYPE>` format — e.g., `<EMAIL>`, `<KEY>`, `<AWS_KEY>`, `<SSN>`.
-
----
-
-### 3. Adding Scanner Modules
-
-**Where**: `src/security/`
-
-If you want to add a new scanner type (e.g., code injection, prompt compression):
-1. Create `src/security/your_scanner.rs`
-2. Add `pub mod your_scanner;` to `src/security/mod.rs`
-3. Integrate into the pipeline in `src/server.rs` (after DLP, before Threat Engine)
-4. Add unit tests
-5. Ensure it doesn't add blocking I/O to the hot path
-
----
-
-### 4. Improving the AI Judge
-
-**Where**: `src/security/judge.rs`
-
-- System prompt improvements: more specific examples, better Agent-First logic
-- Support for additional models (add model-specific formatting)
-- Response parsing improvements
-
----
-
-## ✅ Pull Request Checklist
-
-Before submitting a PR, ensure:
-
-- [ ] `cargo build --release` compiles with zero errors
-- [ ] `cargo test` passes all tests
-- [ ] New code includes unit tests
-- [ ] Threat signatures are normalized (lowercase, no accents)
-- [ ] DLP tokens follow `<TYPE>` naming convention
-- [ ] No blocking I/O in the hot path (Layer 1 & 2)
-- [ ] Severity levels follow the guide (100 = exploit, 95 = jailbreak, 80 = risky tool, 70 = context)
-- [ ] Documentation is updated if behavior changes
-
----
-
-## 🧪 Testing
+Run this before every commit/PR:
 
 ```bash
-# Run all tests
-cargo test
-
-# Run specific module tests
-cargo test -- dlp
-cargo test -- normalizer
-cargo test -- threat_engine
-cargo test -- injection_scanner
-
-# Run with output
-cargo test -- --nocapture
+cargo fmt -- --check
+cargo test --all-targets --locked
+cargo clippy --all-targets --all-features --locked -- -D warnings
+cargo check --all-targets --no-default-features --locked
+cargo build --release --locked
+git diff --check
 ```
 
-### Test categories:
-- **DLP**: Email, CC, SSN, IPv4, API keys (OpenAI, AWS, GitHub, Slack, Groq), violation checks
-- **Normalizer**: Lowercase, de-accent, syntax preservation, SSTI, SQL, shell operators
-- **Threat Engine**: Sev 100 blocking, Sev 80 tagging, SSTI regex, whitelisting
-- **Injection Scanner**: Jailbreak, prompt extraction, RCE, safe input
+Never weaken a gate with `|| true` in CI or packaging.
 
----
+## Commit strategy
 
-## 🐛 Reporting Issues
+- One security claim or behavior per commit.
+- Keep mechanical formatting separate from semantic changes.
+- Include the regression test in the same commit as the fix.
+- Do not mix vault crypto, UI, routing, and DLP changes.
+- Explain compatibility and migration behavior in the commit/PR description.
+- Preserve unrelated work in a dirty tree.
 
-When reporting a bug, include:
-1. The input prompt that caused the issue
-2. Expected behavior vs actual behavior
-3. Your `guardian.toml` config (redact API keys)
-4. Output from `--verbose` mode
-5. OS and Rust version
+Recommended prefixes:
 
----
+```text
+fix:      closes an incorrect or unsafe behavior
+feat:     introduces a bounded capability
+refactor: changes structure without changing the security contract
+docs:     documentation/ADR only
+test:     tests/fixtures only
+build:    toolchain, dependency lock, CI, packaging
+```
 
-## 📄 License
+## Security review checklist
 
-By contributing, you agree that your contributions will be licensed under the same license as the project.
+For any change involving secrets, DLP, providers, logs, configuration, or network behavior, answer:
 
----
+- Can a literal value enter a prompt, model body, URL, error, `Debug`, log, trace, panic, JSON, or audit record?
+- What happens when a backend, key, config field, file, or response chunk is missing or malformed?
+- Is the default still loopback/local/audit?
+- Can a model choose a backend, path, recipient, provider, or shell command?
+- Are sizes, counts, recursion, and response bodies bounded before allocation?
+- Does streaming have exactly the same security policy as buffered responses?
+- Are sensitive temporary buffers zeroized where ownership allows it?
+- Does the test prove data placement, not merely a return value?
+- Is a migration ambiguous or silently permissive?
 
-<p align="center">
-  <strong>Thank you for helping make AI safer. 🛡️</strong>
-</p>
+## SecretBroker contributions
+
+`SecretBackend::resolve` is deliberately narrow and read-only.
+
+A backend must not:
+
+- Launch a shell or arbitrary executable.
+- Read an arbitrary filesystem path derived from a model.
+- Prompt interactively inside request handling.
+- Perform pairing, migration, set, delete, or recovery as a side effect.
+- Include a secret value in any error.
+- Cache plaintext without a documented TTL, ownership model, and zeroization path.
+
+A backend must:
+
+- Own one canonical lowercase scheme.
+- Validate backend-specific path and field rules.
+- Fail closed on empty/unavailable values.
+- Return `SecretValue`.
+- Include unit tests and, when applicable, platform integration tests.
+- Document headless/mobile behavior and its trust assumptions.
+
+Administrative APIs (`set`, `delete`, `pair`, `revoke`, `recover`) are separate from `resolve` and require their own authorization design.
+
+Portable vault implementation must comply with [ADR-0001](docs/adr/0001-portable-vault-format.md). Do not enable production writes before every gate in that ADR is met.
+
+## DLP contributions
+
+When adding/changing a detector:
+
+1. Add positive and negative fixtures.
+2. Test boundary splitting and overlap with more specific patterns.
+3. Test category toggles.
+4. Test reversible request redaction and local restoration.
+5. Confirm provider-generated response values do not get accidentally restored.
+6. Measure false positives on operational text such as IPs, ports, hashes, commands, and code.
+
+Never log a matched substring in a test failure or production event.
+
+## Request extraction
+
+New OpenAI-compatible text-bearing fields must be added to `src/pipeline/extract.rs` with:
+
+- Exact JSON pointer tests.
+- All relevant roles/content variants.
+- A replacement test proving redaction updates the intended field.
+- A fail-closed behavior when the pointer can no longer be updated.
+
+Do not recursively scan arbitrary JSON strings without defining whether fields such as model IDs, URLs, binary payloads, and metadata are in scope.
+
+## Provider and routing changes
+
+- Default routing must remain local.
+- External egress requires an explicit route, load-balancer opt-in, or CLI override.
+- Each external route uses `credential = "{{secret:...}}"`; literal keys are invalid.
+- A route change must swap URL, model, and credential together.
+- Incoming client `Authorization` is not forwarded upstream.
+- Provider credentials are injected only at the transport boundary.
+
+Integration tests should use a loopback mock server and assert where the credential appears.
+
+## Rule dictionaries
+
+Rule files live under `rules/` and are deterministic inputs. Include:
+
+- Unique ID.
+- Normalized pattern.
+- Category and severity.
+- Regex flag.
+- Test or reproducible fixture.
+
+Remember that a second-brain runbook may legitimately contain destructive commands as text. The default `audit` policy must keep such material discussable.
+
+If rule integrity is enabled during testing, regenerate the local manifest with the same test HMAC key. Never commit `rules/.manifest.json` or the key.
+
+## Documentation
+
+Update documentation in the same commit when behavior or defaults change.
+
+- README describes current behavior only.
+- Security/crypto design decisions go in `docs/adr/`.
+- CHANGELOG records user-visible changes.
+- Planned features must be labeled as planned; do not present scaffolding as an active boundary.
+
+## Reporting security issues
+
+Do not publish live credentials, private prompts, vault files, or exploitable deployment details in a public issue. Provide a minimal synthetic reproduction and contact maintainers privately when disclosure could put users at risk.
+
+## License
+
+Contributions are licensed under Apache-2.0, matching the repository.

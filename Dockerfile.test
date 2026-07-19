@@ -1,7 +1,7 @@
-# Test Dockerfile for Open-GuardIAn v0.1.5
+# Test Dockerfile for Open-Guardian v0.2.0
 # Usage: docker build -f Dockerfile.test .
 
-FROM rust:1.75-slim as builder
+FROM rust:1.88-slim AS builder
 
 WORKDIR /usr/src/open-guardian
 
@@ -11,6 +11,8 @@ RUN apt-get update && apt-get install -y \
     libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
+RUN rustup component add rustfmt clippy
+
 # Copy manifests
 COPY Cargo.toml Cargo.lock ./
 
@@ -18,17 +20,11 @@ COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 COPY rules ./rules
 
-# Build release
-RUN cargo build --release 2>&1 | tee build.log
-
-# Run tests
-RUN cargo test 2>&1 | tee test.log
-
-# Check formatting
-RUN cargo fmt -- --check 2>&1 || true
-
-# Check clippy
-RUN cargo clippy -- -D warnings 2>&1 || true
+# Every gate is mandatory.
+RUN cargo fmt -- --check
+RUN cargo test --all-targets --locked 2>&1 | tee test.log
+RUN cargo clippy --all-targets -- -D warnings
+RUN cargo build --release --locked 2>&1 | tee build.log
 
 # Final verification stage
 FROM debian:bookworm-slim
@@ -42,9 +38,7 @@ COPY --from=builder /usr/src/open-guardian/test.log /app/
 # Install runtime deps
 RUN apt-get update && apt-get install -y libssl3 ca-certificates && rm -rf /var/lib/apt/lists/*
 
-# Verify binary works
-RUN open-guardian --version
+# Verify the CLI without starting a network listener.
+RUN open-guardian --help
 
-EXPOSE 8080
-
-CMD ["open-guardian", "start", "--config", "/app/guardian.toml"]
+CMD ["open-guardian", "--help"]

@@ -1,13 +1,15 @@
 # ==========================================
 # OPEN-GUARDIAN CONFIGURATION
 # "Secure by Default, Configurable by Choice."
-# Open-Guardian v0.1.4
+# Open-Guardian v0.2.0 local-first profile
 # ==========================================
 
 [server]
+# Loopback-only by default. Set to "0.0.0.0" only when network exposure is intentional.
+bind_address = "127.0.0.1"
 port = 8080
-# Default upstream for requests that don't match a specific route
-default_upstream = "https://api.groq.com/openai"
+# Privacy default: unmatched models remain on the local Ollama-compatible endpoint.
+default_upstream = "http://127.0.0.1:11434/v1"
 
 # RATE LIMITING (Cost & Resource Protection)
 # Maximum global requests per minute
@@ -38,45 +40,46 @@ phone_redaction = true
 # ==========================================
 [security.policies]
 # Default action when a threat is detected: block, audit, redact, allow
-# "block"  -> Return 403, stop the request
+# "block"  -> Return 403, stop the request (traditional firewall profile)
 # "audit"  -> Log WARN + inject X-Guardian-Risk header + forward
-# "redact" -> Sanitize and forward
+# "redact" -> Deprecated alias for audit; DLP behavior is controlled below
 # "allow"  -> No enforcement (not recommended)
-default_action = "block"
+# Second-brain/control-plane default: classify commands in runbooks without blocking the conversation.
+default_action = "audit"
 
 # DLP behavior: "block" (stop request) or "redact" (replace with <TOKEN> anonymizers)
 dlp_action = "redact"
 
 # Modular threat dictionaries (replaces old threats_path)
-# Add new languages/categories by adding a new [[security.dictionaries]] entry.
+# Add new languages/categories by adding a new [[security.policies.dictionaries]] entry.
 # Set enabled = false to disable a dictionary without deleting it.
-
-[[security.dictionaries]]
-id = "common"
-path = "rules/common.json"
-enabled = true
-
-[[security.dictionaries]]
-id = "jailbreaks_en"
-path = "rules/jailbreaks_en.json"
-enabled = true
-
-[[security.dictionaries]]
-id = "jailbreaks_es"
-path = "rules/jailbreaks_es.json"
-enabled = true
 
 # DevOps Mode (Whitelisting): Explicitly allow dangerous patterns
 # These bypass the Threat Engine signature check
 allowed_patterns = ["git pull", "git push", "kubectl get", "kubectl apply"]
 
+[[security.policies.dictionaries]]
+id = "common"
+path = "rules/common.json"
+enabled = true
+
+[[security.policies.dictionaries]]
+id = "jailbreaks_en"
+path = "rules/jailbreaks_en.json"
+enabled = true
+
+[[security.policies.dictionaries]]
+id = "jailbreaks_es"
+path = "rules/jailbreaks_es.json"
+enabled = true
+
 # ==========================================
 # THE SHERIFF (Local AI Governance Judge)
-# Optional: Set ai_judge_enabled = false to run in "Heuristics Only" mode (faster, less Contextual)
+# Optional compatibility feature. Disabled by default: deterministic controls do not require a second model.
 # Model: Defaults to "qwen2.5:0.5b" but supports ANY model pulled in Ollama (e.g. "llama3", "mistral")
 # ==========================================
 [judge]
-ai_judge_enabled = true
+ai_judge_enabled = false
 ai_judge_endpoint = "http://127.0.0.1:11434/api/chat"
 # You can use any model name from `ollama list` here:
 ai_judge_model = "qwen2.5:0.5b"
@@ -89,9 +92,8 @@ judge_cache_ttl_seconds = 60
 judge_max_concurrency = 4
 
 # RESILIENCE MODE:
-# true = Fail-Open (Prioritize Availability). Recommended for DevOps Agents.
-# false = Fail-Close (Prioritize Security). Recommended for Enterprise.
-fail_open = true
+# If the optional judge is enabled, errors fail closed by default.
+fail_open = false
 
 # ==========================================
 # SMART ROUTING & CREDENTIAL INJECTION
@@ -99,16 +101,16 @@ fail_open = true
 
 [routes]
 # --- GROQ ---
-"gpt-oss" = { url = "https://api.groq.com/openai", model = "openai/gpt-oss-120b", key_env = "GROQ_API_KEY" }
+"gpt-oss" = { url = "https://api.groq.com/openai", model = "openai/gpt-oss-120b", credential = "{{secret:env://GROQ_API_KEY}}" }
 
-"llama-4" = { url = "https://api.groq.com/openai", model = "meta-llama/llama-4-maverick-17b-128e-instruct", key_env = "GROQ_API_KEY" }
+"llama-4" = { url = "https://api.groq.com/openai", model = "meta-llama/llama-4-maverick-17b-128e-instruct", credential = "{{secret:env://GROQ_API_KEY}}" }
 
-"llama-3-fast" = { url = "https://api.groq.com/openai", model = "llama-3.1-8b-instant", key_env = "GROQ_API_KEY" }
+"llama-3-fast" = { url = "https://api.groq.com/openai", model = "llama-3.1-8b-instant", credential = "{{secret:env://GROQ_API_KEY}}" }
 
-"qwen-32b" = { url = "https://api.groq.com/openai", model = "qwen/qwen3-32b", key_env = "GROQ_API_KEY" }
+"qwen-32b" = { url = "https://api.groq.com/openai", model = "qwen/qwen3-32b", credential = "{{secret:env://GROQ_API_KEY}}" }
 
 # --- OpenAI ---
-"gpt-4o" = { url = "https://api.openai.com/v1", key_env = "OPENAI_API_KEY" }
+"gpt-4o" = { url = "https://api.openai.com/v1", credential = "{{secret:env://OPENAI_API_KEY}}" }
 
 # --- Local ---
 "qwen3:4b" = { url = "http://127.0.0.1:11434/v1" }
@@ -121,17 +123,18 @@ fail_open = true
 # Prompts scoring < smart_threshold go to the "fast" tier.
 # ==========================================
 [load_balancer]
-enabled = true
+# Explicit opt-in: enabling this example sends matching prompts to external providers.
+enabled = false
 smart_threshold = 40
 
 # "Economy" line: cheap + fast (ideal for simple queries)
 [load_balancer.fast]
 url = "https://api.groq.com/openai"
 model = "llama3-8b-8192"
-key_env = "GROQ_API_KEY"
+credential = "{{secret:env://GROQ_API_KEY}}"
 
 # "Premium" line: high-intelligence (ideal for complex reasoning)
 [load_balancer.smart]
 url = "https://api.openai.com/v1"
 model = "gpt-4-turbo"
-key_env = "OPENAI_API_KEY"
+credential = "{{secret:env://OPENAI_API_KEY}}"
