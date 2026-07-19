@@ -265,6 +265,17 @@ fn block_response(category: &str, detail: &str, message: &str) -> Response {
         .into_response()
 }
 
+fn contains_proxy_path_traversal(path: &str) -> bool {
+    let lowercase = path.to_ascii_lowercase();
+    path.contains('\0')
+        || path.contains('\\')
+        || path.contains("//")
+        || path.split('/').any(|segment| segment == "..")
+        || lowercase.contains("%2e%2e")
+        || lowercase.contains("%2e%2f")
+        || lowercase.contains("%2f%2e")
+}
+
 // ================================================================
 // THE PIPELINE ORCHESTRATOR — Strict 3-Layer Enforcement
 // ================================================================
@@ -323,32 +334,19 @@ async fn handler(
     }
 
     // ── Path Security ──
-    // Only validate paths that contain suspicious patterns (traversal attempts)
-    // Skip API routes like /v1/chat/completions which start with /
-    let is_api_route = path_str.starts_with("/v1/") || path_str.starts_with("/api/");
-    let has_traversal =
-        path_str.contains("..") || path_str.contains("~") || path_str.contains("//");
-
-    if !is_api_route && has_traversal {
-        let path_validation = crate::security::path_security::validate_path(&path_str);
-        if !path_validation.valid {
-            let error_msg = path_validation
-                .errors
-                .iter()
-                .map(|e| format!("{:?}", e))
-                .collect::<Vec<_>>()
-                .join(", ");
-            banner::print_warning(&format!("Path traversal blocked: {}", error_msg));
-            log_security_event(
-                state.audit_log_path.clone(),
-                serde_json::json!({
-                    "timestamp": Utc::now().to_rfc3339(),
-                    "event": "path_traversal_blocked",
-                    "path": path_str
-                }),
-            );
-            return block_response("Security", "path_traversal", "Invalid request path");
-        }
+    // API prefixes do not exempt traversal. The path is forwarded to another
+    // HTTP service, so filesystem canonicalization is neither needed nor safe.
+    if contains_proxy_path_traversal(&path_str) {
+        banner::print_warning("Path traversal blocked");
+        log_security_event(
+            state.audit_log_path.clone(),
+            serde_json::json!({
+                "timestamp": Utc::now().to_rfc3339(),
+                "event": "path_traversal_blocked",
+                "path": path_str
+            }),
+        );
+        return block_response("Security", "path_traversal", "Invalid request path");
     }
 
     // ── Rate Limiting ──
@@ -897,5 +895,26 @@ async fn handler(
             );
         }
         response
+    }
+}
+
+#[cfg(test)]
+mod path_tests {
+    use super::contains_proxy_path_traversal;
+
+    #[test]
+    fn api_prefix_never_exempts_traversal() {
+        for path in [
+            "/v1/../admin",
+            "/v1/%2e%2e/admin",
+            "/api/%2E%2Fadmin",
+            "/v1\\..\\admin",
+            "/v1//admin",
+        ] {
+            assert!(contains_proxy_path_traversal(path), "accepted {path}");
+        }
+
+        assert!(!contains_proxy_path_traversal("/v1/chat/completions"));
+        assert!(!contains_proxy_path_traversal("/api/models/qwen3:8b"));
     }
 }
