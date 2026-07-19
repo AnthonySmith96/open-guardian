@@ -118,6 +118,24 @@ pub fn extract_scan_targets(body: &Value) -> Vec<ScanTarget> {
     targets
 }
 
+/// Replaces the JSON string represented by an extracted scan target.
+///
+/// Returns `false` if the request changed after extraction or the pointer no
+/// longer identifies a string. Callers can then fail closed instead of silently
+/// forwarding an unredacted value.
+pub fn replace_scan_target(body: &mut Value, target: &ScanTarget, replacement: String) -> bool {
+    let Some(value) = body.pointer_mut(&target.json_pointer) else {
+        return false;
+    };
+
+    if !value.is_string() {
+        return false;
+    }
+
+    *value = Value::String(replacement);
+    true
+}
+
 /// Extracts strings from a content field (may be string or array of content parts).
 fn extract_content_strings(
     pointer: &str,
@@ -323,5 +341,55 @@ mod tests {
 
         let targets = extract_scan_targets(&body);
         assert!(targets.iter().any(|t| t.raw == "Hello"));
+    }
+
+    #[test]
+    fn test_replace_every_supported_target_kind() {
+        let mut body = json!({
+            "prompt": "prompt-secret",
+            "input": ["input-secret"],
+            "instructions": "instruction-secret",
+            "messages": [{
+                "role": "assistant",
+                "content": [{"type": "text", "text": "content-secret"}],
+                "tool_calls": [{
+                    "function": {
+                        "name": "lookup",
+                        "arguments": "{\"token\":\"tool-secret\"}"
+                    }
+                }]
+            }]
+        });
+
+        for target in extract_scan_targets(&body) {
+            assert!(replace_scan_target(
+                &mut body,
+                &target,
+                format!("redacted:{:?}", target.kind)
+            ));
+        }
+
+        assert_eq!(
+            body.pointer("/prompt").and_then(Value::as_str),
+            Some("redacted:Prompt")
+        );
+        assert_eq!(
+            body.pointer("/input/0").and_then(Value::as_str),
+            Some("redacted:Input")
+        );
+        assert_eq!(
+            body.pointer("/instructions").and_then(Value::as_str),
+            Some("redacted:Instructions")
+        );
+        assert_eq!(
+            body.pointer("/messages/0/content/0/text")
+                .and_then(Value::as_str),
+            Some("redacted:MessageContent")
+        );
+        assert_eq!(
+            body.pointer("/messages/0/tool_calls/0/function/arguments")
+                .and_then(Value::as_str),
+            Some("redacted:ToolArguments")
+        );
     }
 }

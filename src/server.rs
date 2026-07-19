@@ -1,5 +1,6 @@
 use crate::banner;
 use crate::config::{JudgeConfig, PolicyAction, PolicyConfig, RouteConfig};
+use crate::pipeline::{extract_scan_targets, replace_scan_target};
 use crate::proxy::ProxyClient;
 use crate::security::{
     analyze_injection, check_for_violations, redact_pii, DlpAction, Judge, ThreatEngine,
@@ -183,25 +184,6 @@ pub async fn start_server(
     Ok(())
 }
 
-fn extract_full_content(content: &Value) -> String {
-    if let Some(s) = content.as_str() {
-        return s.to_string();
-    }
-
-    if let Some(parts) = content.as_array() {
-        let mut full_text = String::new();
-        for part in parts {
-            if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
-                full_text.push_str(text);
-                full_text.push(' ');
-            }
-        }
-        return full_text.trim().to_string();
-    }
-
-    String::new()
-}
-
 fn log_security_event(path: Option<String>, event: Value) {
     tokio::spawn(async move {
         if let Some(log_path) = path {
@@ -382,18 +364,10 @@ async fn handler(
         // loop below (Addendum 2: reuse already-parsed text, never re-read the stream).
         let mut content_for_slb = String::new();
 
-        if let Some(messages) = json_body.get_mut("messages").and_then(|m| m.as_array_mut()) {
-            for message in messages {
-                let role = message
-                    .get("role")
-                    .and_then(|r| r.as_str())
-                    .unwrap_or("user");
-                if role != "user" && role != "system" {
-                    continue;
-                }
-
-                let content_raw = message.get("content").unwrap_or(&Value::Null);
-                let content_text = extract_full_content(content_raw);
+        let scan_targets = extract_scan_targets(&json_body);
+        if !scan_targets.is_empty() {
+            for target in scan_targets {
+                let content_text = target.raw.clone();
 
                 if content_text.is_empty() {
                     continue;
@@ -474,32 +448,20 @@ async fn handler(
                         }),
                     );
 
-                    // Update the message content with redacted text
-                    if let Some(content_val) = message.get_mut("content") {
-                        if content_val.is_string() {
-                            *content_val = Value::String(cleaned.clone());
-                        } else if let Some(parts) = content_val.as_array_mut() {
-                            for part in parts {
-                                if let Some(text_val) = part.get("text").and_then(|t| t.as_str()) {
-                                    let part_cleaned =
-                                        redact_pii(text_val, Some(&state.dlp_config));
-                                    if let Some(t) = part.get_mut("text") {
-                                        *t = Value::String(part_cleaned);
-                                    }
-                                }
-                            }
-                        }
+                    if !replace_scan_target(&mut json_body, &target, cleaned.clone()) {
+                        tracing::error!(
+                            "SECURITY: failed to apply DLP redaction at {}",
+                            target.json_pointer
+                        );
+                        return block_response(
+                            "security_policy",
+                            "redaction_failed",
+                            "Access Denied: sensitive data could not be safely redacted",
+                        );
                     }
                 }
 
-                // Get current content text (possibly redacted)
-                let current_content =
-                    extract_full_content(message.get("content").unwrap_or(&Value::Null));
-                let scan_text = if current_content.is_empty() {
-                    &content_text
-                } else {
-                    &current_content
-                };
+                let scan_text = &cleaned;
 
                 // ── Unicode Normalization ──
                 // Normalize Unicode text to prevent homograph attacks and obfuscation
@@ -654,7 +616,9 @@ async fn handler(
                         match state.default_action {
                             PolicyAction::Audit => {
                                 risk_level = Some("High");
-                                tracing::warn!("AUDIT: AI Judge flagged request but forwarding per audit policy");
+                                tracing::warn!(
+                                    "AUDIT: AI Judge flagged request but forwarding per audit policy"
+                                );
                             }
                             PolicyAction::Allow => {
                                 tracing::warn!(
