@@ -14,6 +14,7 @@
 - Make HMAC rule integrity opt-in for fresh installs but fail closed once a key or manifest establishes the contract.
 - Commit `Cargo.lock` for reproducible binary dependency resolution.
 - Pin CI actions, test on Rust 1.88 across Linux/macOS/Windows, and verify both desktop and headless feature sets.
+- Package binaries with configuration, rules, documentation, SHA-256 checksums, and build-provenance attestations.
 
 ### New
 

@@ -189,6 +189,8 @@ Configuration discovery order is:
 
 Relative dictionary paths are anchored to the configuration file that declares them.
 
+Tagged GitHub releases package this complete layout for Linux x86_64, Windows x86_64, macOS Intel, and macOS Apple Silicon. Each release includes `SHA256SUMS` and GitHub build-provenance attestations. The workflow rejects tags that do not match the version in `Cargo.toml`.
+
 ## Configuration
 
 The checked-in [guardian.toml](guardian.toml) is the complete annotated example. A minimal local profile is:
