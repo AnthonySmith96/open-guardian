@@ -25,7 +25,8 @@ git clone https://github.com/AnthonySmith96/open-guardian.git
 cd open-guardian
 
 cargo test --all-targets --locked
-cargo clippy --all-targets -- -D warnings
+cargo clippy --all-targets --all-features --locked -- -D warnings
+cargo check --all-targets --no-default-features --locked
 ```
 
 ## Required gate
@@ -35,7 +36,8 @@ Run this before every commit/PR:
 ```bash
 cargo fmt -- --check
 cargo test --all-targets --locked
-cargo clippy --all-targets -- -D warnings
+cargo clippy --all-targets --all-features --locked -- -D warnings
+cargo check --all-targets --no-default-features --locked
 cargo build --release --locked
 git diff --check
 ```

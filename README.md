@@ -442,7 +442,8 @@ Run the complete gate before committing:
 ```bash
 cargo fmt -- --check
 cargo test --all-targets --locked
-cargo clippy --all-targets -- -D warnings
+cargo clippy --all-targets --all-features --locked -- -D warnings
+cargo check --all-targets --no-default-features --locked
 cargo build --release --locked
 git diff --check
 ```
