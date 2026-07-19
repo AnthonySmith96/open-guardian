@@ -11,7 +11,7 @@ keywords = ["ai", "security", "firewall", "llm", "rust"]
 categories = ["network-programming", "science::robotics"]
 
 [features]
-default = ["native-keyring"]
+default = ["native-keyring", "portable-vault"]
 native-keyring = ["dep:keyring", "dep:rpassword"]
 portable-vault = ["dep:age", "zeroize/serde"]
 

@@ -27,7 +27,7 @@ Implemented on this branch:
 Not implemented yet:
 
 - A user-facing reveal/copy UI and local authorization flow.
-- Writable portable `vault://` backend, pairing, recovery, or device revocation.
+- Writable portable-vault operations, pairing, recovery, rollback anchors, or device revocation.
 - RAG, note ingestion, Obsidian-style index, chat UI, or session compression.
 - Token-by-token response streaming. SSE is buffered by design until a safe streaming protocol is implemented.
 - A sensitivity classifier and per-scope consent UI for external-provider routing.
@@ -297,7 +297,7 @@ Examples:
 {{secret:vault://infrastructure/proxmox#password}}
 ```
 
-`env://` and `keychain://` are enabled in standard binaries. `keychain://` maps only to the fixed application service `io.github.anthonysmith96.open-guardian`, so a reference cannot select another application's credential namespace. Build with `--no-default-features` for a headless binary that only registers `env://`. Other schemes parse as references but fail closed until their backend is registered.
+`env://` and `keychain://` are enabled in standard binaries. `keychain://` maps only to the fixed application service `io.github.anthonysmith96.open-guardian`, so a reference cannot select another application's credential namespace. The read-only `vault://` backend is registered only when a `[vault]` section explicitly supplies its encrypted file and identity reference. Build with `--no-default-features` for a headless binary that only registers `env://`. Other schemes parse as references but fail closed until their backend is registered.
 
 The parser rejects:
 
@@ -350,7 +350,21 @@ Models and generic application DTOs must not receive a `SecretBroker` handle or 
 
 ### Portable vault
 
-The `vault://` implementation will use age v1 recipients rather than custom cryptography. Device identities will live in native credential stores; revocation re-encrypts the whole small vault. Production writes remain gated by interoperability, fuzzing, rollback, atomic-write, and heap-leak tests. See [ADR-0001](docs/adr/0001-portable-vault-format.md).
+The prototype can read an age v1 encrypted `.guardian.age` file after its X25519 identity is resolved outside the vault:
+
+```toml
+[vault]
+path = "secrets/personal.guardian.age"
+identity = "{{secret:keychain://vaults/personal#age_identity}}"
+
+[routes."work-gpt"]
+url = "https://api.openai.com/v1"
+credential = "{{secret:vault://providers/openai#api_key}}"
+```
+
+The encrypted payload and decrypted plaintext are bounded; format versions, timestamps, logical paths, fields, duplicates, and unknown properties are validated. Parsed values are zeroizing and cannot be serialized or printed through `Debug`.
+
+This is explicitly read-only and pre-production. It currently has no rollback anchor, interoperability fixture with the independent Go implementation, initialization, pairing, recovery, mutation, or revocation. Production writes remain gated by the ADR's atomic-write, fuzz, rollback, interoperability, and heap-leak requirements. See [ADR-0001](docs/adr/0001-portable-vault-format.md).
 
 ## DLP behavior
 

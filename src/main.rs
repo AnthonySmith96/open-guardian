@@ -446,6 +446,7 @@ async fn run_app(
                 dlp_config,
                 load_balancer: file_config.load_balancer,
                 security: file_config.security.clone(),
+                vault: file_config.vault,
             };
 
             tracing::info!("Server starting on {}:{}", config.bind_address, port);

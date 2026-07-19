@@ -12,6 +12,7 @@ pub struct Config {
     pub judge: Option<JudgeConfig>,
     pub routes: Option<HashMap<String, RouteConfig>>,
     pub load_balancer: Option<LoadBalancerConfig>,
+    pub vault: Option<VaultConfig>,
 }
 
 #[derive(Deserialize, Debug, Default)]
@@ -187,6 +188,13 @@ pub struct RouteConfig {
     legacy_key_env: Option<String>,
 }
 
+#[derive(Deserialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct VaultConfig {
+    pub path: String,
+    pub identity: SecretRef,
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 //  Semantic Load Balancer Config
 // ─────────────────────────────────────────────────────────────────────────────
@@ -245,22 +253,27 @@ pub fn resolve_resource_path(path: impl AsRef<Path>) -> PathBuf {
     std::env::current_dir().unwrap_or_default().join(path)
 }
 
-fn make_dictionary_paths_absolute(config: &mut Config, config_path: &Path) {
+fn make_resource_paths_absolute(config: &mut Config, config_path: &Path) {
     let Some(base_dir) = config_path.parent() else {
         return;
     };
-    let Some(policies) = config
+    if let Some(policies) = config
         .security
         .as_mut()
         .and_then(|security| security.policies.as_mut())
-    else {
-        return;
-    };
+    {
+        for dictionary in &mut policies.dictionaries {
+            let path = Path::new(&dictionary.path);
+            if !path.is_absolute() {
+                dictionary.path = base_dir.join(path).to_string_lossy().into_owned();
+            }
+        }
+    }
 
-    for dictionary in &mut policies.dictionaries {
-        let path = Path::new(&dictionary.path);
+    if let Some(vault) = config.vault.as_mut() {
+        let path = Path::new(&vault.path);
         if !path.is_absolute() {
-            dictionary.path = base_dir.join(path).to_string_lossy().into_owned();
+            vault.path = base_dir.join(path).to_string_lossy().into_owned();
         }
     }
 }
@@ -310,6 +323,13 @@ fn normalize_credentials(config: &mut Config) -> anyhow::Result<()> {
             "load_balancer.smart",
         )?;
     }
+    if let Some(vault) = &config.vault {
+        if vault.identity.backend() == "vault" {
+            return Err(anyhow::anyhow!(
+                "vault.identity cannot resolve from the vault it is intended to unlock"
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -344,7 +364,7 @@ pub fn load_config() -> anyhow::Result<Config> {
         .map_err(|error| anyhow::anyhow!("failed to read {}: {}", path.display(), error))?;
     let mut config = toml::from_str::<Config>(&content)
         .map_err(|error| anyhow::anyhow!("failed to parse {}: {}", path.display(), error))?;
-    make_dictionary_paths_absolute(&mut config, &path);
+    make_resource_paths_absolute(&mut config, &path);
     normalize_credentials(&mut config)?;
     banner::print_success(&format!("Loaded config from {}", path.display()));
     Ok(config)
@@ -352,7 +372,7 @@ pub fn load_config() -> anyhow::Result<Config> {
 
 #[cfg(test)]
 mod tests {
-    use super::{make_dictionary_paths_absolute, normalize_credentials, Config};
+    use super::{make_resource_paths_absolute, normalize_credentials, Config};
 
     #[test]
     fn dictionary_paths_are_anchored_to_the_config_file() {
@@ -368,7 +388,7 @@ mod tests {
         let base = std::env::temp_dir().join("open-guardian-config-test");
         let config_path = base.join("guardian.toml");
 
-        make_dictionary_paths_absolute(&mut config, &config_path);
+        make_resource_paths_absolute(&mut config, &config_path);
 
         let dictionary = &config
             .security
@@ -380,6 +400,34 @@ mod tests {
             std::path::Path::new(&dictionary.path),
             base.join("rules/test.json")
         );
+    }
+
+    #[test]
+    fn portable_vault_path_is_anchored_to_config_and_cannot_self_unlock() {
+        let mut config: Config = toml::from_str(
+            r#"
+            [vault]
+            path = "secrets/personal.guardian.age"
+            identity = "{{secret:keychain://vaults/personal#age_identity}}"
+            "#,
+        )
+        .expect("valid config");
+        let base = std::env::temp_dir().join("open-guardian-vault-config-test");
+        let config_path = base.join("guardian.toml");
+
+        make_resource_paths_absolute(&mut config, &config_path);
+
+        assert_eq!(
+            std::path::Path::new(&config.vault.as_ref().expect("vault").path),
+            base.join("secrets/personal.guardian.age")
+        );
+        normalize_credentials(&mut config).expect("non-circular identity");
+
+        config.vault.as_mut().expect("vault").identity =
+            "{{secret:vault://identity/device#private_key}}"
+                .parse()
+                .expect("reference");
+        assert!(normalize_credentials(&mut config).is_err());
     }
 
     #[test]

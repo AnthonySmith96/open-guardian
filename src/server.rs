@@ -17,6 +17,8 @@ use chrono::Utc;
 use colored::Colorize;
 #[cfg(feature = "native-keyring")]
 use open_guardian::secrets::KeychainBackend;
+#[cfg(feature = "portable-vault")]
+use open_guardian::secrets::PortableVaultBackend;
 use open_guardian::secrets::{EnvironmentBackend, SecretBroker, SecretRef};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -40,6 +42,7 @@ pub struct ServerConfig {
     pub load_balancer: Option<crate::config::LoadBalancerConfig>,
     /// Security configuration for hardening options.
     pub security: Option<crate::config::SecurityConfig>,
+    pub vault: Option<crate::config::VaultConfig>,
 }
 
 #[derive(Clone)]
@@ -88,6 +91,29 @@ pub async fn start_server(
     secret_broker.register(EnvironmentBackend)?;
     #[cfg(feature = "native-keyring")]
     secret_broker.register(KeychainBackend)?;
+    if let Some(vault) = config.vault.as_ref() {
+        #[cfg(feature = "portable-vault")]
+        {
+            let identity = secret_broker
+                .resolve(&vault.identity)
+                .await
+                .map_err(|error| {
+                    anyhow::anyhow!("failed to resolve portable vault device identity: {error}")
+                })?;
+            let backend = PortableVaultBackend::new(&vault.path, identity)?;
+            secret_broker.register(backend)?;
+            tracing::warn!(
+                "SEC: portable vault is read-only and has no rollback anchor in this prototype"
+            );
+        }
+        #[cfg(not(feature = "portable-vault"))]
+        {
+            let _ = vault;
+            return Err(anyhow::anyhow!(
+                "guardian.toml configures [vault], but this binary lacks the portable-vault feature"
+            ));
+        }
+    }
     let proxy = ProxyClient::new(config.timeout_seconds, Arc::new(secret_broker))?;
     let judge = Judge::new(config.judge_config.clone());
 
