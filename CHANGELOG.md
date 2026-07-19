@@ -27,6 +27,7 @@
 - Replaced provider `key_env` usage with typed `credential = "{{secret:...}}"` references; legacy configuration migrates in memory with a warning.
 - Added per-request reversible DLP placeholders with random nonces and local post-response restoration.
 - Added an age-v1-based portable vault ADR with explicit production implementation gates.
+- Added a feature-gated, bounded v1 vault payload parser that rejects duplicate paths/fields and keeps parsed values zeroizing and non-serializable.
 - Changed the default policy to `audit` for runbook/second-brain workflows; strict `block` remains available.
 
 ### Compatibility notes

@@ -13,6 +13,7 @@ categories = ["network-programming", "science::robotics"]
 [features]
 default = ["native-keyring"]
 native-keyring = ["dep:keyring", "dep:rpassword"]
+portable-vault = ["zeroize/serde"]
 
 [dependencies]
 clap = { version = "4.4", features = ["derive"] }

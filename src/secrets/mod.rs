@@ -6,6 +6,9 @@
 
 mod reference;
 
+#[cfg(feature = "portable-vault")]
+mod vault_payload;
+
 #[cfg(feature = "native-keyring")]
 mod keychain;
 
