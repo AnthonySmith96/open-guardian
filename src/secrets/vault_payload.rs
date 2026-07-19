@@ -4,8 +4,6 @@
 //! parsing separate makes the age boundary and the data-format boundary
 //! independently testable.
 
-#![allow(dead_code)] // Removed when the age-backed resolver is connected.
-
 use super::{SecretError, SecretRef, SecretValue};
 use chrono::DateTime;
 use serde::de::{self, MapAccess, Visitor};
@@ -27,7 +25,8 @@ const MAX_VAULT_ID_BYTES: usize = 128;
 pub(super) struct VaultPayloadV1 {
     format_version: u8,
     vault_id: String,
-    generation: u64,
+    #[serde(rename = "generation")]
+    _generation: u64,
     created_at: String,
     updated_at: String,
     entries: Vec<VaultEntry>,
@@ -175,16 +174,6 @@ impl VaultPayloadV1 {
             .ok_or_else(|| payload_error("vault entry or field is unavailable"))?;
 
         Ok(SecretValue(value.0))
-    }
-
-    #[allow(dead_code)]
-    pub(super) fn generation(&self) -> u64 {
-        self.generation
-    }
-
-    #[allow(dead_code)]
-    pub(super) fn vault_id(&self) -> &str {
-        &self.vault_id
     }
 }
 

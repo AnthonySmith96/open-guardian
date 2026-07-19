@@ -13,7 +13,7 @@ categories = ["network-programming", "science::robotics"]
 [features]
 default = ["native-keyring"]
 native-keyring = ["dep:keyring", "dep:rpassword"]
-portable-vault = ["zeroize/serde"]
+portable-vault = ["dep:age", "zeroize/serde"]
 
 [dependencies]
 clap = { version = "4.4", features = ["derive"] }
@@ -47,6 +47,7 @@ unidecode = "0.3"
 zeroize = "1.9"
 keyring = { version = "=4.1.5", optional = true, default-features = false, features = ["v1"] }
 rpassword = { version = "=7.5.4", optional = true }
+age = { version = "=0.12.1", optional = true, default-features = false }
 
 # Security module dependencies (from Open-GuardIAn)
 # HMAC for rule file integrity

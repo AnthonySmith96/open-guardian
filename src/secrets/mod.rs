@@ -9,6 +9,9 @@ mod reference;
 #[cfg(feature = "portable-vault")]
 mod vault_payload;
 
+#[cfg(feature = "portable-vault")]
+mod vault;
+
 #[cfg(feature = "native-keyring")]
 mod keychain;
 
@@ -22,6 +25,9 @@ pub use reference::SecretRef;
 
 #[cfg(feature = "native-keyring")]
 pub use keychain::{KeychainAdmin, KeychainBackend, KEYCHAIN_SERVICE};
+
+#[cfg(feature = "portable-vault")]
+pub use vault::PortableVaultBackend;
 
 /// Ephemeral secret material. It cannot be cloned and never prints its value.
 pub struct SecretValue(Zeroizing<String>);
