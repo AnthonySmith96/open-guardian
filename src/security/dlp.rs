@@ -213,6 +213,8 @@ pub fn check_for_violations(content: &str, config: Option<&DlpConfig>) -> Option
     let email_enabled = config.map(|c| c.email_redaction).unwrap_or(true);
     let ssn_enabled = config.map(|c| c.ssn_redaction).unwrap_or(true);
     let cc_enabled = config.map(|c| c.credit_card_redaction).unwrap_or(true);
+    let phone_enabled = config.map(|c| c.phone_redaction).unwrap_or(true);
+    let ip_enabled = config.map(|c| c.ip_redaction).unwrap_or(true);
 
     // Secrets first (more specific)
     if secret_enabled {
@@ -252,6 +254,18 @@ pub fn check_for_violations(content: &str, config: Option<&DlpConfig>) -> Option
                 description: "Slack token detected (xoxb-/xoxp-)".into(),
             });
         }
+        if generic_re().is_match(content) {
+            return Some(DlpViolation {
+                category: "Secret".into(),
+                description: "Generic secret assignment detected".into(),
+            });
+        }
+        if bearer_re().is_match(content) {
+            return Some(DlpViolation {
+                category: "Secret".into(),
+                description: "Bearer token detected".into(),
+            });
+        }
     }
 
     // PII
@@ -271,6 +285,18 @@ pub fn check_for_violations(content: &str, config: Option<&DlpConfig>) -> Option
         return Some(DlpViolation {
             category: "PII".into(),
             description: "Credit card number detected".into(),
+        });
+    }
+    if phone_enabled && phone_re().is_match(content) {
+        return Some(DlpViolation {
+            category: "PII".into(),
+            description: "Phone number detected".into(),
+        });
+    }
+    if ip_enabled && ipv4_re().is_match(content) {
+        return Some(DlpViolation {
+            category: "PII".into(),
+            description: "IPv4 address detected".into(),
         });
     }
 
@@ -421,6 +447,34 @@ mod tests {
         let result = check_for_violations("Use xoxb-1234567890-abcdefgh to connect", None);
         assert!(result.is_some());
         assert_eq!(result.unwrap().category, "Secret");
+    }
+
+    #[test]
+    fn block_and_redact_modes_cover_the_same_detector_categories() {
+        for sensitive in [
+            "api_key=abcdefghijklmnopqrstuvwxyz123456",
+            "Bearer abcdefghijklmnopqrstuvwxyz123456",
+            "+1 (415) 555-2671",
+            "192.168.1.100",
+        ] {
+            assert!(
+                check_for_violations(sensitive, None).is_some(),
+                "block mode missed detector category"
+            );
+            assert_ne!(redact_pii(sensitive, None), sensitive);
+        }
+    }
+
+    #[test]
+    fn block_mode_respects_phone_and_ip_toggles() {
+        let config = DlpConfig {
+            phone_redaction: false,
+            ip_redaction: false,
+            ..Default::default()
+        };
+
+        assert!(check_for_violations("+1 (415) 555-2671", Some(&config)).is_none());
+        assert!(check_for_violations("192.168.1.100", Some(&config)).is_none());
     }
 
     #[test]

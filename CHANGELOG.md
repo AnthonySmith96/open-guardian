@@ -11,6 +11,7 @@
 - Fail closed when a configured provider credential is missing, empty, malformed, duplicated, or unsupported.
 - Buffer all responses, including SSE, to a 16 MiB inspection limit before release.
 - Reject non-UTF-8 upstream bodies that cannot pass text DLP, and stop appending a newline to provider responses.
+- Make `block` and `redact` cover the same secret, bearer-token, phone, and IPv4 detector categories.
 - Resolve configuration/rule resources predictably and fail on malformed discovered configuration.
 - Make HMAC rule integrity opt-in for fresh installs but fail closed once a key or manifest establishes the contract.
 - Commit `Cargo.lock` for reproducible binary dependency resolution.
