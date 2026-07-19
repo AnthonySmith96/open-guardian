@@ -7,6 +7,42 @@ use http::{HeaderMap, Method, StatusCode};
 use reqwest::Client;
 use std::time::Duration;
 
+fn build_bearer_header(raw_key: &str) -> Result<reqwest::header::HeaderValue> {
+    let trimmed = raw_key.trim();
+    let clean_key = if trimmed.len() >= 2
+        && ((trimmed.starts_with('"') && trimmed.ends_with('"'))
+            || (trimmed.starts_with('\'') && trimmed.ends_with('\'')))
+    {
+        &trimmed[1..trimmed.len() - 1]
+    } else {
+        trimmed
+    };
+
+    if clean_key.is_empty() {
+        anyhow::bail!("configured API key is empty");
+    }
+
+    let mut header = reqwest::header::HeaderValue::from_str(&format!("Bearer {}", clean_key))
+        .context("configured API key cannot be encoded as an Authorization header")?;
+    header.set_sensitive(true);
+    Ok(header)
+}
+
+fn load_authorization_header(env_name: &str) -> Result<reqwest::header::HeaderValue> {
+    let key = std::env::var(env_name).with_context(|| {
+        format!(
+            "required credential environment variable '{}' is unavailable",
+            env_name
+        )
+    })?;
+    build_bearer_header(&key).with_context(|| {
+        format!(
+            "credential from environment variable '{}' is invalid",
+            env_name
+        )
+    })
+}
+
 /// All parameters needed to forward a single request upstream.
 /// Bundles the args to keep `forward_request` within clippy::too_many_arguments limits.
 pub struct ForwardOptions<'a> {
@@ -63,27 +99,12 @@ impl ProxyClient {
         let mut request_builder = self.client.request(method, &url).body(body);
 
         if let Some(env_name) = api_key_env {
-            if let Ok(key) = std::env::var(env_name) {
-                let clean_key = key.trim().replace(['\"', '\''], "");
-
-                tracing::info!(
-                    "SEC: API key loaded from env var '{}' (length: {})",
-                    env_name,
-                    clean_key.len()
-                );
-
-                match reqwest::header::HeaderValue::from_str(&format!("Bearer {}", clean_key)) {
-                    Ok(hv) => {
-                        request_builder =
-                            request_builder.header(reqwest::header::AUTHORIZATION, hv);
-                    }
-                    Err(e) => {
-                        banner::print_error(&format!("Critical Security Error: Invalid API Key format in {} ({}). Skipping injection.", env_name, e));
-                    }
-                }
-            } else {
-                tracing::error!("SEC: Environment variable {} NOT FOUND", env_name);
-            }
+            let authorization = load_authorization_header(env_name)?;
+            tracing::info!(
+                "SEC: credential loaded from environment variable '{}'",
+                env_name
+            );
+            request_builder = request_builder.header(reqwest::header::AUTHORIZATION, authorization);
         }
 
         for (name, value) in headers.iter() {
@@ -248,5 +269,28 @@ impl ProxyClient {
         Ok(res_builder
             .body(axum::body::Body::from(body_final))
             .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_bearer_header;
+
+    #[test]
+    fn bearer_header_is_sensitive_and_trims_wrapping_quotes() {
+        let header = build_bearer_header("  \"test-token\"  ").expect("valid key");
+
+        assert_eq!(header.to_str().expect("ASCII header"), "Bearer test-token");
+        assert!(header.is_sensitive());
+    }
+
+    #[test]
+    fn bearer_header_rejects_empty_keys() {
+        assert!(build_bearer_header("  ''  ").is_err());
+    }
+
+    #[test]
+    fn bearer_header_rejects_header_injection() {
+        assert!(build_bearer_header("token\r\nx-forged: true").is_err());
     }
 }
