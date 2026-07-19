@@ -15,6 +15,9 @@ use std::net::TcpStream;
 use std::path::PathBuf;
 use std::time::Duration;
 
+#[cfg(feature = "native-keyring")]
+use open_guardian::secrets::{KeychainAdmin, SecretRef, SecretValue};
+
 #[cfg(windows)]
 use windows_service::{
     define_windows_service,
@@ -75,6 +78,12 @@ enum Commands {
         #[command(subcommand)]
         action: ServiceAction,
     },
+    /// Provision credentials in Open-Guardian's native keychain namespace
+    #[cfg(feature = "native-keyring")]
+    Secret {
+        #[command(subcommand)]
+        action: SecretAction,
+    },
 }
 
 #[derive(Subcommand, Debug, Clone)]
@@ -87,6 +96,47 @@ enum ServiceAction {
     Start,
     /// Stop the running service
     Stop,
+}
+
+#[cfg(feature = "native-keyring")]
+#[derive(Subcommand, Debug, Clone)]
+enum SecretAction {
+    /// Store a value entered through a hidden terminal prompt
+    Set {
+        /// Canonical keychain reference, for example {{secret:keychain://providers/openai#api_key}}
+        reference: SecretRef,
+    },
+    /// Delete an exact keychain entry
+    Delete {
+        /// Canonical keychain reference to delete
+        reference: SecretRef,
+    },
+}
+
+#[cfg(feature = "native-keyring")]
+async fn handle_secret_command(action: SecretAction) -> anyhow::Result<()> {
+    let admin = KeychainAdmin;
+
+    match action {
+        SecretAction::Set { reference } => {
+            KeychainAdmin::validate_reference(&reference)?;
+            let value = rpassword::prompt_password("Secret value: ")?;
+            let value = SecretValue::new(value)?;
+            admin.set(&reference, value).await?;
+            banner::print_success(&format!(
+                "Stored {reference} in the native credential store."
+            ));
+        }
+        SecretAction::Delete { reference } => {
+            KeychainAdmin::validate_reference(&reference)?;
+            admin.delete(&reference).await?;
+            banner::print_success(&format!(
+                "Deleted {reference} from the native credential store."
+            ));
+        }
+    }
+
+    Ok(())
 }
 
 fn get_env_path() -> PathBuf {
@@ -427,6 +477,10 @@ async fn run_app(
         }
         Commands::Service { action } => {
             handle_service_command(action)?;
+        }
+        #[cfg(feature = "native-keyring")]
+        Commands::Secret { action } => {
+            handle_secret_command(action).await?;
         }
     }
 

@@ -26,9 +26,8 @@ Implemented on this branch:
 
 Not implemented yet:
 
-- Administrative keychain set/delete commands and reveal/copy UI.
+- A user-facing reveal/copy UI and local authorization flow.
 - Writable portable `vault://` backend, pairing, recovery, or device revocation.
-- A user-facing secret reveal/copy flow.
 - RAG, note ingestion, Obsidian-style index, chat UI, or session compression.
 - Token-by-token response streaming. SSE is buffered by design until a safe streaming protocol is implemented.
 - A sensitivity classifier and per-scope consent UI for external-provider routing.
@@ -306,6 +305,28 @@ The parser rejects:
 - Backslashes, control characters, raw whitespace, query strings, nested schemes, and multiple fragments.
 - References longer than 2 KiB.
 
+### Native keychain
+
+Provision an exact reference through a hidden terminal prompt:
+
+```bash
+open-guardian secret set '{{secret:keychain://providers/openai#api_key}}'
+```
+
+Then use the opaque reference in configuration:
+
+```toml
+credential = "{{secret:keychain://providers/openai#api_key}}"
+```
+
+Delete it explicitly when it is no longer needed:
+
+```bash
+open-guardian secret delete '{{secret:keychain://providers/openai#api_key}}'
+```
+
+The secret value is never accepted as a command-line argument, so it does not enter shell history or the process list. These commands cannot enumerate entries and reject every scheme except `keychain://`. A platform may show its own authorization prompt. Headless builds made with `--no-default-features` omit both the native backend and these commands; use `env://` there.
+
 ### Rust library API
 
 The broker is available without starting the proxy:
@@ -397,12 +418,14 @@ open-guardian start [--bind IP] [--port PORT] [--upstream URL] [--local] [--verb
 open-guardian audit [PATH]
 open-guardian sign [RULES_DIR]
 open-guardian service install|uninstall|start|stop
+open-guardian secret set|delete '{{secret:keychain://logical/path#field}}'
 ```
 
 - `start` runs the proxy.
 - `audit` performs a shallow local check for selected sensitive config files and obvious public binds; it is not a full security scanner.
 - `sign` writes the local HMAC rule manifest.
 - `service` integrates with the native service manager.
+- `secret` provisions or removes an exact entry in Open-Guardian's native keychain namespace.
 
 `--bind 0.0.0.0` is an explicit exposure decision. The current server has no LAN authentication layer; do not publish it directly to the internet.
 
@@ -451,8 +474,8 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the contributor workflow. It is being
 
 ### Native secrets
 
-- Platform keychain backends selected explicitly per target.
-- Administrative set/delete/list APIs separate from resolve.
+- Cross-platform keychain resolution in a fixed application namespace.
+- Administrative set/delete CLI separate from request-time resolve; enumeration is intentionally unsupported.
 - Local authorization and reveal/copy UX contract.
 - Clipboard expiry where platform support is reliable.
 

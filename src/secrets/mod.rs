@@ -18,7 +18,7 @@ use zeroize::Zeroizing;
 pub use reference::SecretRef;
 
 #[cfg(feature = "native-keyring")]
-pub use keychain::{KeychainBackend, KEYCHAIN_SERVICE};
+pub use keychain::{KeychainAdmin, KeychainBackend, KEYCHAIN_SERVICE};
 
 /// Ephemeral secret material. It cannot be cloned and never prints its value.
 pub struct SecretValue(Zeroizing<String>);

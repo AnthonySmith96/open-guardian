@@ -14,6 +14,14 @@ pub const KEYCHAIN_SERVICE: &str = "io.github.anthonysmith96.open-guardian";
 #[derive(Debug, Default)]
 pub struct KeychainBackend;
 
+/// Explicit administrative access to Open-Guardian's keychain namespace.
+///
+/// This type is never registered with `SecretBroker` and is not reachable from
+/// request handling. Interactive clients can use it to provision or remove an
+/// exact reference without gaining list/enumeration capability.
+#[derive(Debug, Default)]
+pub struct KeychainAdmin;
+
 impl KeychainBackend {
     fn account(reference: &SecretRef) -> Result<String, SecretError> {
         if reference.backend() != "keychain" {
@@ -61,6 +69,50 @@ impl SecretBackend for KeychainBackend {
     }
 }
 
+impl KeychainAdmin {
+    pub fn validate_reference(reference: &SecretRef) -> Result<(), SecretError> {
+        KeychainBackend::account(reference).map(drop)
+    }
+
+    pub async fn set(&self, reference: &SecretRef, value: SecretValue) -> Result<(), SecretError> {
+        let account = KeychainBackend::account(reference)?;
+
+        tokio::task::spawn_blocking(move || {
+            let entry = keyring::Entry::new(KEYCHAIN_SERVICE, &account).map_err(|_| {
+                SecretError::Backend(
+                    "native credential store is unavailable on this device".to_string(),
+                )
+            })?;
+            entry.set_password(value.expose_secret()).map_err(|_| {
+                SecretError::Backend(
+                    "Open-Guardian keychain entry could not be written".to_string(),
+                )
+            })
+        })
+        .await
+        .map_err(|_| SecretError::Backend("native credential-store worker failed".to_string()))?
+    }
+
+    pub async fn delete(&self, reference: &SecretRef) -> Result<(), SecretError> {
+        let account = KeychainBackend::account(reference)?;
+
+        tokio::task::spawn_blocking(move || {
+            let entry = keyring::Entry::new(KEYCHAIN_SERVICE, &account).map_err(|_| {
+                SecretError::Backend(
+                    "native credential store is unavailable on this device".to_string(),
+                )
+            })?;
+            entry.delete_credential().map_err(|_| {
+                SecretError::Backend(
+                    "Open-Guardian keychain entry could not be deleted".to_string(),
+                )
+            })
+        })
+        .await
+        .map_err(|_| SecretError::Backend("native credential-store worker failed".to_string()))?
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -84,6 +136,6 @@ mod tests {
             .parse()
             .expect("reference");
 
-        assert!(KeychainBackend::account(&reference).is_err());
+        assert!(KeychainAdmin::validate_reference(&reference).is_err());
     }
 }

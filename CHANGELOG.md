@@ -19,6 +19,7 @@
 - Added canonical `SecretRef` parsing and serde support.
 - Added reusable `SecretBroker`, `SecretBackend`, zeroizing `SecretValue`, and `env://` backend as a Rust library API.
 - Added a read-only `keychain://` backend confined to Open-Guardian's native credential-store namespace; `env://`-only headless builds remain available.
+- Added explicit native-keychain set/delete commands with hidden input and no enumeration capability.
 - Replaced provider `key_env` usage with typed `credential = "{{secret:...}}"` references; legacy configuration migrates in memory with a warning.
 - Added per-request reversible DLP placeholders with random nonces and local post-response restoration.
 - Added an age-v1-based portable vault ADR with explicit production implementation gates.
