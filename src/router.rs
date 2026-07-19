@@ -6,6 +6,7 @@
 //! The score is computed in microseconds — no LLM calls, no network, no latency overhead.
 
 use crate::config::LoadBalancerConfig;
+use crate::secrets::SecretRef;
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Routing Tier
@@ -42,9 +43,8 @@ pub struct RoutingDecision {
     pub tier: RoutingTier,
     /// Upstream base URL for the selected tier.
     pub upstream_url: String,
-    /// Environment variable name holding the API key (if any).
-    /// Caller **must** use this to inject the correct `Authorization` header.
-    pub key_env: Option<String>,
+    /// Opaque credential resolved only at the upstream transport boundary.
+    pub credential: Option<SecretRef>,
     /// Model to rewrite in the JSON body (if any).
     pub model: Option<String>,
 }
@@ -126,7 +126,7 @@ pub fn route(text: &str, config: &LoadBalancerConfig) -> RoutingDecision {
             score,
             tier: RoutingTier::Smart,
             upstream_url: tier_cfg.url.clone(),
-            key_env: tier_cfg.key_env.clone(),
+            credential: tier_cfg.credential.clone(),
             model: tier_cfg.model.clone(),
         }
     } else {
@@ -136,7 +136,7 @@ pub fn route(text: &str, config: &LoadBalancerConfig) -> RoutingDecision {
             score,
             tier: RoutingTier::Fast,
             upstream_url: tier_cfg.url.clone(),
-            key_env: tier_cfg.key_env.clone(),
+            credential: tier_cfg.credential.clone(),
             model: tier_cfg.model.clone(),
         }
     }

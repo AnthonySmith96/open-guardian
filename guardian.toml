@@ -100,16 +100,16 @@ fail_open = false
 
 [routes]
 # --- GROQ ---
-"gpt-oss" = { url = "https://api.groq.com/openai", model = "openai/gpt-oss-120b", key_env = "GROQ_API_KEY" }
+"gpt-oss" = { url = "https://api.groq.com/openai", model = "openai/gpt-oss-120b", credential = "{{secret:env://GROQ_API_KEY}}" }
 
-"llama-4" = { url = "https://api.groq.com/openai", model = "meta-llama/llama-4-maverick-17b-128e-instruct", key_env = "GROQ_API_KEY" }
+"llama-4" = { url = "https://api.groq.com/openai", model = "meta-llama/llama-4-maverick-17b-128e-instruct", credential = "{{secret:env://GROQ_API_KEY}}" }
 
-"llama-3-fast" = { url = "https://api.groq.com/openai", model = "llama-3.1-8b-instant", key_env = "GROQ_API_KEY" }
+"llama-3-fast" = { url = "https://api.groq.com/openai", model = "llama-3.1-8b-instant", credential = "{{secret:env://GROQ_API_KEY}}" }
 
-"qwen-32b" = { url = "https://api.groq.com/openai", model = "qwen/qwen3-32b", key_env = "GROQ_API_KEY" }
+"qwen-32b" = { url = "https://api.groq.com/openai", model = "qwen/qwen3-32b", credential = "{{secret:env://GROQ_API_KEY}}" }
 
 # --- OpenAI ---
-"gpt-4o" = { url = "https://api.openai.com/v1", key_env = "OPENAI_API_KEY" }
+"gpt-4o" = { url = "https://api.openai.com/v1", credential = "{{secret:env://OPENAI_API_KEY}}" }
 
 # --- Local ---
 "qwen3:4b" = { url = "http://127.0.0.1:11434/v1" }
@@ -129,10 +129,10 @@ smart_threshold = 40
 [load_balancer.fast]
 url = "https://api.groq.com/openai"
 model = "llama3-8b-8192"
-key_env = "GROQ_API_KEY"
+credential = "{{secret:env://GROQ_API_KEY}}"
 
 # "Premium" line: high-intelligence (ideal for complex reasoning)
 [load_balancer.smart]
 url = "https://api.openai.com/v1"
 model = "gpt-4-turbo"
-key_env = "OPENAI_API_KEY"
+credential = "{{secret:env://OPENAI_API_KEY}}"

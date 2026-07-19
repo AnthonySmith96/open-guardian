@@ -2,6 +2,7 @@ use crate::banner;
 use crate::config::{JudgeConfig, PolicyAction, PolicyConfig, RouteConfig};
 use crate::pipeline::{extract_scan_targets, replace_scan_target};
 use crate::proxy::ProxyClient;
+use crate::secrets::{EnvironmentBackend, SecretBroker, SecretRef};
 use crate::security::{
     analyze_injection, check_for_violations, redact_pii, DlpAction, Judge, ThreatEngine,
 };
@@ -81,7 +82,9 @@ pub async fn start_server(
     config: ServerConfig,
     shutdown_token: tokio_util::sync::CancellationToken,
 ) -> anyhow::Result<()> {
-    let proxy = ProxyClient::new(config.timeout_seconds)?;
+    let mut secret_broker = SecretBroker::new();
+    secret_broker.register(EnvironmentBackend)?;
+    let proxy = ProxyClient::new(config.timeout_seconds, Arc::new(secret_broker))?;
     let judge = Judge::new(config.judge_config.clone());
 
     // ── Layer 0: Rule File Integrity Verification ──
@@ -365,10 +368,9 @@ async fn handler(
         let mut upstream_url = route
             .map(|r| r.url.clone())
             .unwrap_or_else(|| state.default_upstream.clone());
-        // We own the key_env as a String so it can be replaced by the SLB
-        // (Addendum 1: the SLB must swap the key when it changes the tier).
-        let mut effective_key_env: Option<String> =
-            route.and_then(|r| r.key_env.as_ref().map(|s| s.to_string()));
+        // The SLB may replace this opaque reference when it changes provider.
+        let mut effective_credential: Option<SecretRef> =
+            route.and_then(|route| route.credential.clone());
 
         let mut modified = true;
         let mut risk_level: Option<&str> = None; // For X-Guardian-Risk header in audit mode
@@ -676,9 +678,8 @@ async fn handler(
                 // Hard Override (Addendum 3): SLB is authoritative.
                 upstream_url = decision.upstream_url;
 
-                // Addendum 1 — Header Swap: Replace key_env with the tier's key.
-                // If we left the old key, the new upstream would return 401.
-                effective_key_env = decision.key_env;
+                // Credential swap is mandatory when the selected provider changes.
+                effective_credential = decision.credential;
 
                 // Rewrite model in JSON body if tier specifies one.
                 if let Some(ref slb_model) = decision.model {
@@ -707,7 +708,7 @@ async fn handler(
             .proxy
             .forward_request(crate::proxy::ForwardOptions {
                 upstream_url: &upstream_url,
-                api_key_env: effective_key_env.as_deref(),
+                credential: effective_credential.as_ref(),
                 method,
                 path: &path_str,
                 headers,
@@ -812,7 +813,7 @@ async fn handler(
             .proxy
             .forward_request(crate::proxy::ForwardOptions {
                 upstream_url: &upstream_url,
-                api_key_env: None,
+                credential: None,
                 method,
                 path: &path_str,
                 headers,

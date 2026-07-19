@@ -1,4 +1,5 @@
 use crate::banner;
+use crate::secrets::{EnvironmentBackend, SecretRef};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::fs;
@@ -183,7 +184,9 @@ pub struct JudgeConfig {
 pub struct RouteConfig {
     pub url: String,
     pub model: Option<String>,
-    pub key_env: Option<String>,
+    pub credential: Option<SecretRef>,
+    #[serde(default, rename = "key_env")]
+    legacy_key_env: Option<String>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -197,10 +200,10 @@ pub struct TierConfig {
     pub url: String,
     /// Optional model override to inject into the request body.
     pub model: Option<String>,
-    /// Environment variable name holding the API key for this tier.
-    /// CRITICAL: This must be correct — the proxy will use it to inject
-    /// the Authorization header. A mismatch causes a 401 Unauthorized.
-    pub key_env: Option<String>,
+    /// Opaque reference resolved by SecretBroker only at the HTTP boundary.
+    pub credential: Option<SecretRef>,
+    #[serde(default, rename = "key_env")]
+    legacy_key_env: Option<String>,
 }
 
 /// Configuration block for the Semantic Load Balancer (SLB).
@@ -264,6 +267,54 @@ fn make_dictionary_paths_absolute(config: &mut Config, config_path: &Path) {
     }
 }
 
+fn migrate_credential(
+    credential: &mut Option<SecretRef>,
+    legacy_key_env: &Option<String>,
+    location: &str,
+) -> anyhow::Result<()> {
+    if credential.is_some() && legacy_key_env.is_some() {
+        return Err(anyhow::anyhow!(
+            "{location} defines both 'credential' and deprecated 'key_env'"
+        ));
+    }
+    if credential.is_none() {
+        if let Some(variable) = legacy_key_env {
+            *credential = Some(EnvironmentBackend::reference(variable).map_err(|error| {
+                anyhow::anyhow!("invalid deprecated key_env in {location}: {error}")
+            })?);
+            banner::print_warning(&format!(
+                "{location}.key_env is deprecated; use credential = \"{{{{secret:env://{variable}}}}}\""
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn normalize_credentials(config: &mut Config) -> anyhow::Result<()> {
+    if let Some(routes) = config.routes.as_mut() {
+        for (name, route) in routes {
+            migrate_credential(
+                &mut route.credential,
+                &route.legacy_key_env,
+                &format!("routes.{name}"),
+            )?;
+        }
+    }
+    if let Some(load_balancer) = config.load_balancer.as_mut() {
+        migrate_credential(
+            &mut load_balancer.fast_tier.credential,
+            &load_balancer.fast_tier.legacy_key_env,
+            "load_balancer.fast",
+        )?;
+        migrate_credential(
+            &mut load_balancer.smart_tier.credential,
+            &load_balancer.smart_tier.legacy_key_env,
+            "load_balancer.smart",
+        )?;
+    }
+    Ok(())
+}
+
 pub fn load_config() -> anyhow::Result<Config> {
     let explicit_path = std::env::var_os("GUARDIAN_CONFIG").map(PathBuf::from);
     let path = if let Some(path) = explicit_path {
@@ -296,13 +347,14 @@ pub fn load_config() -> anyhow::Result<Config> {
     let mut config = toml::from_str::<Config>(&content)
         .map_err(|error| anyhow::anyhow!("failed to parse {}: {}", path.display(), error))?;
     make_dictionary_paths_absolute(&mut config, &path);
+    normalize_credentials(&mut config)?;
     banner::print_success(&format!("Loaded config from {}", path.display()));
     Ok(config)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{make_dictionary_paths_absolute, Config};
+    use super::{make_dictionary_paths_absolute, normalize_credentials, Config};
 
     #[test]
     fn dictionary_paths_are_anchored_to_the_config_file() {
@@ -330,5 +382,37 @@ mod tests {
             std::path::Path::new(&dictionary.path),
             base.join("rules/test.json")
         );
+    }
+
+    #[test]
+    fn deprecated_key_env_is_migrated_to_a_secret_reference() {
+        let mut config: Config = toml::from_str(
+            r#"
+            [routes]
+            model = { url = "https://example.invalid/v1", key_env = "MODEL_API_KEY" }
+            "#,
+        )
+        .expect("valid legacy config");
+
+        normalize_credentials(&mut config).expect("migrate credential");
+
+        let route = &config.routes.expect("routes")["model"];
+        assert_eq!(
+            route.credential.as_ref().expect("credential").to_string(),
+            "{{secret:env://MODEL_API_KEY}}"
+        );
+    }
+
+    #[test]
+    fn duplicate_credential_configuration_is_rejected() {
+        let mut config: Config = toml::from_str(
+            r#"
+            [routes]
+            model = { url = "https://example.invalid/v1", key_env = "OLD_KEY", credential = "{{secret:env://NEW_KEY}}" }
+            "#,
+        )
+        .expect("valid TOML");
+
+        assert!(normalize_credentials(&mut config).is_err());
     }
 }

@@ -1,12 +1,15 @@
 use crate::banner;
 use crate::config::DlpConfig;
+use crate::secrets::{SecretBroker, SecretRef};
 use crate::security::{check_for_violations, redact_pii, DlpAction};
 use anyhow::{Context, Result};
 use axum::response::IntoResponse;
 use futures_util::StreamExt;
 use http::{HeaderMap, Method, StatusCode};
 use reqwest::Client;
+use std::sync::Arc;
 use std::time::Duration;
+use zeroize::Zeroizing;
 
 const MAX_INSPECTABLE_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 
@@ -48,32 +51,18 @@ fn build_bearer_header(raw_key: &str) -> Result<reqwest::header::HeaderValue> {
         anyhow::bail!("configured API key is empty");
     }
 
-    let mut header = reqwest::header::HeaderValue::from_str(&format!("Bearer {}", clean_key))
+    let authorization = Zeroizing::new(format!("Bearer {}", clean_key));
+    let mut header = reqwest::header::HeaderValue::from_str(authorization.as_str())
         .context("configured API key cannot be encoded as an Authorization header")?;
     header.set_sensitive(true);
     Ok(header)
-}
-
-fn load_authorization_header(env_name: &str) -> Result<reqwest::header::HeaderValue> {
-    let key = std::env::var(env_name).with_context(|| {
-        format!(
-            "required credential environment variable '{}' is unavailable",
-            env_name
-        )
-    })?;
-    build_bearer_header(&key).with_context(|| {
-        format!(
-            "credential from environment variable '{}' is invalid",
-            env_name
-        )
-    })
 }
 
 /// All parameters needed to forward a single request upstream.
 /// Bundles the args to keep `forward_request` within clippy::too_many_arguments limits.
 pub struct ForwardOptions<'a> {
     pub upstream_url: &'a str,
-    pub api_key_env: Option<&'a str>,
+    pub credential: Option<&'a SecretRef>,
     pub method: Method,
     pub path: &'a str,
     pub headers: HeaderMap,
@@ -85,16 +74,20 @@ pub struct ForwardOptions<'a> {
 #[derive(Clone)]
 pub struct ProxyClient {
     client: Client,
+    secret_broker: Arc<SecretBroker>,
 }
 
 impl ProxyClient {
-    pub fn new(timeout_seconds: u64) -> Result<Self> {
+    pub fn new(timeout_seconds: u64, secret_broker: Arc<SecretBroker>) -> Result<Self> {
         let client = Client::builder()
             .timeout(Duration::from_secs(timeout_seconds))
             .build()
             .context("Failed to build reqwest client")?;
 
-        Ok(Self { client })
+        Ok(Self {
+            client,
+            secret_broker,
+        })
     }
 
     pub async fn forward_request(
@@ -103,7 +96,7 @@ impl ProxyClient {
     ) -> Result<axum::response::Response> {
         let ForwardOptions {
             upstream_url,
-            api_key_env,
+            credential,
             method,
             path,
             headers,
@@ -124,12 +117,14 @@ impl ProxyClient {
 
         let mut request_builder = self.client.request(method, &url).body(body);
 
-        if let Some(env_name) = api_key_env {
-            let authorization = load_authorization_header(env_name)?;
-            tracing::info!(
-                "SEC: credential loaded from environment variable '{}'",
-                env_name
-            );
+        if let Some(reference) = credential {
+            let secret = self
+                .secret_broker
+                .resolve(reference)
+                .await
+                .with_context(|| format!("failed to resolve provider credential {reference}"))?;
+            let authorization = build_bearer_header(secret.expose_secret())?;
+            tracing::info!("SEC: provider credential resolved via SecretBroker");
             request_builder = request_builder.header(reqwest::header::AUTHORIZATION, authorization);
         }
 
@@ -296,6 +291,23 @@ impl ProxyClient {
 #[cfg(test)]
 mod tests {
     use super::{append_response_chunk, build_bearer_header};
+    use crate::secrets::{SecretBackend, SecretBroker, SecretError, SecretRef, SecretValue};
+    use async_trait::async_trait;
+    use axum::{http::StatusCode, routing::any, Router};
+    use std::sync::Arc;
+
+    struct FixedCredentialBackend;
+
+    #[async_trait]
+    impl SecretBackend for FixedCredentialBackend {
+        fn scheme(&self) -> &'static str {
+            "test"
+        }
+
+        async fn resolve(&self, _reference: &SecretRef) -> Result<SecretValue, SecretError> {
+            SecretValue::new("broker-token".to_string())
+        }
+    }
 
     #[test]
     fn bearer_header_is_sensitive_and_trims_wrapping_quotes() {
@@ -322,5 +334,56 @@ mod tests {
         assert!(append_response_chunk(&mut buffer, &[1, 2, 3, 4], 8).is_ok());
         assert!(append_response_chunk(&mut buffer, &[5], 8).is_err());
         assert_eq!(buffer.len(), 8);
+    }
+
+    #[tokio::test]
+    async fn provider_credential_is_resolved_only_into_authorization_header() {
+        let app = Router::new().route(
+            "/probe",
+            any(|headers: axum::http::HeaderMap| async move {
+                match headers
+                    .get(axum::http::header::AUTHORIZATION)
+                    .and_then(|value| value.to_str().ok())
+                {
+                    Some("Bearer broker-token") => StatusCode::NO_CONTENT,
+                    _ => StatusCode::UNAUTHORIZED,
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test server");
+        let address = listener.local_addr().expect("test address");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("serve test request");
+        });
+
+        let mut broker = SecretBroker::new();
+        broker
+            .register(FixedCredentialBackend)
+            .expect("register backend");
+        let proxy = super::ProxyClient::new(5, Arc::new(broker)).expect("proxy client");
+        let reference: SecretRef = "{{secret:test://provider/api-key}}"
+            .parse()
+            .expect("credential reference");
+
+        let response = proxy
+            .forward_request(super::ForwardOptions {
+                upstream_url: &format!("http://{address}"),
+                credential: Some(&reference),
+                method: axum::http::Method::POST,
+                path: "/probe",
+                headers: axum::http::HeaderMap::new(),
+                body: axum::body::Bytes::from_static(b"{}"),
+                dlp_config: None,
+                dlp_action: crate::security::DlpAction::Redact,
+            })
+            .await
+            .expect("forward request");
+
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        server.abort();
     }
 }

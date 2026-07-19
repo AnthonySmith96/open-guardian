@@ -119,6 +119,15 @@ impl SecretBroker {
 /// will implement the same trait without changing callers.
 pub struct EnvironmentBackend;
 
+impl EnvironmentBackend {
+    pub fn reference(variable: &str) -> Result<SecretRef, SecretError> {
+        if !is_valid_environment_name(variable) {
+            return Err(SecretError::InvalidEnvironmentName);
+        }
+        format!("{{{{secret:env://{variable}}}}}").parse()
+    }
+}
+
 #[async_trait]
 impl SecretBackend for EnvironmentBackend {
     fn scheme(&self) -> &'static str {

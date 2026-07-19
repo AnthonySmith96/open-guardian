@@ -170,12 +170,12 @@ smart_threshold = 40   # Tune based on your cost/quality trade-off
 [load_balancer.fast]
 url = "https://api.groq.com/openai"
 model = "llama3-8b-8192"
-key_env = "GROQ_API_KEY"
+credential = "{{secret:env://GROQ_API_KEY}}"
 
 [load_balancer.smart]
 url = "https://api.openai.com/v1"
 model = "gpt-4-turbo"
-key_env = "OPENAI_API_KEY"
+credential = "{{secret:env://OPENAI_API_KEY}}"
 ```
 
 > [!NOTE]
@@ -205,11 +205,15 @@ Open-Guardian is not just a firewall; it is a **Multi-Provider API Gateway**. Yo
 
 All of this happens **transparently** to your client application.
 
-### 🔑 Zero-Trust Key Injection
-Client applications **DO NOT** need to handle provider API keys.
-1. You set keys in your server's `.env` (e.g., `OPENAI_API_KEY`, `GROQ_API_KEY`).
-2. Open-Guardian injects the correct key into the upstream request header based on the destination.
-3. This ensures **keys never leak** to client-side agents or logs.
+### 🔑 SecretBroker Key Injection
+Client applications **do not** receive provider API keys.
+
+1. Configuration stores only a canonical reference such as `{{secret:env://OPENAI_API_KEY}}`.
+2. `SecretBroker` resolves it after model selection, at the HTTP transport boundary.
+3. The ephemeral value is marked sensitive, zeroized on drop, and injected only into the upstream `Authorization` header.
+4. Missing, empty, malformed, or unsupported credentials fail closed before the network request.
+
+The `env://` backend supports headless deployments and migration from `key_env`. Platform keychains and the portable encrypted vault will use the same backend contract; do not place a literal API key in `guardian.toml`.
 
 ### 🏷️ Model Aliasing
 You can define custom model names (aliases) that map to specific provider versions. This allows you to swap underlying models without changing application code.
@@ -219,10 +223,10 @@ You can define custom model names (aliases) that map to specific provider versio
 ```toml
 [routes]
 # 1. Alias "fast-model" to Llama 3 on Groq
-"fast-model" = { url = "https://api.groq.com/openai", model = "llama3-70b-8192", key_env = "GROQ_API_KEY" }
+"fast-model" = { url = "https://api.groq.com/openai", model = "llama3-70b-8192", credential = "{{secret:env://GROQ_API_KEY}}" }
 
 # 2. Standard GPT-4o routing
-"gpt-4o" = { url = "https://api.openai.com/v1", key_env = "OPENAI_API_KEY" }
+"gpt-4o" = { url = "https://api.openai.com/v1", credential = "{{secret:env://OPENAI_API_KEY}}" }
 
 # 3. Secure Local Fallback
 "local-judge" = { url = "http://127.0.0.1:11434/v1" }
@@ -462,9 +466,9 @@ judge_max_concurrency = 4
 fail_open = false                # Fail closed if the optional judge is enabled
 
 [routes]
-"gpt-oss" = { url = "https://api.groq.com/openai", model = "openai/gpt-oss-120b", key_env = "GROQ_API_KEY" }
-"llama-4" = { url = "https://api.groq.com/openai", model = "meta-llama/llama-4-maverick-17b-128e-instruct", key_env = "GROQ_API_KEY" }
-"gpt-4o" = { url = "https://api.openai.com/v1", key_env = "OPENAI_API_KEY" }
+"gpt-oss" = { url = "https://api.groq.com/openai", model = "openai/gpt-oss-120b", credential = "{{secret:env://GROQ_API_KEY}}" }
+"llama-4" = { url = "https://api.groq.com/openai", model = "meta-llama/llama-4-maverick-17b-128e-instruct", credential = "{{secret:env://GROQ_API_KEY}}" }
+"gpt-4o" = { url = "https://api.openai.com/v1", credential = "{{secret:env://OPENAI_API_KEY}}" }
 "qwen2.5:0.5b" = { url = "http://127.0.0.1:11434/v1" }
 ```
 
