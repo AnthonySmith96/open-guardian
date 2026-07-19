@@ -21,6 +21,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 pub struct ServerConfig {
+    pub bind_address: String,
     pub port: u16,
     pub default_upstream: String,
     pub routes: HashMap<String, RouteConfig>,
@@ -149,7 +150,14 @@ pub async fn start_server(
         .route("/*path", any(handler))
         .with_state(state.clone());
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], config.port));
+    let bind_ip = config.bind_address.parse().map_err(|error| {
+        anyhow::anyhow!(
+            "invalid server.bind_address '{}': {}",
+            config.bind_address,
+            error
+        )
+    })?;
+    let addr = SocketAddr::new(bind_ip, config.port);
     let model_info = if config.judge_config.ai_judge_enabled.unwrap_or(false) {
         config
             .judge_config

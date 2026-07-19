@@ -38,6 +38,10 @@ struct Cli {
 enum Commands {
     /// Start the Open-GuardIAn Proxy (The Shield)
     Start {
+        /// IP address to listen on (defaults to loopback only)
+        #[arg(long)]
+        bind: Option<String>,
+
         /// Port to listen on
         #[arg(short, long)]
         port: Option<u16>,
@@ -217,6 +221,7 @@ fn windows_service_main(_arguments: Vec<std::ffi::OsString>) {
     rt.block_on(async {
         if let Err(e) = run_app(
             Commands::Start {
+                bind: None,
                 port: None,
                 upstream: None,
                 local: false,
@@ -305,6 +310,7 @@ async fn run_app(
 ) -> anyhow::Result<()> {
     match command {
         Commands::Start {
+            bind,
             port,
             upstream,
             local,
@@ -339,6 +345,13 @@ async fn run_app(
                 .or(file_config.server.as_ref().and_then(|s| s.port))
                 .unwrap_or(8080);
 
+            let bind_address = bind
+                .or(file_config
+                    .server
+                    .as_ref()
+                    .and_then(|s| s.bind_address.clone()))
+                .unwrap_or_else(|| "127.0.0.1".to_string());
+
             let timeout_seconds = 300;
 
             let routes = file_config.routes.clone().unwrap_or_default();
@@ -369,6 +382,7 @@ async fn run_app(
                 .unwrap_or_default();
 
             let config = ServerConfig {
+                bind_address,
                 port,
                 default_upstream: upstream_url,
                 routes,
@@ -384,7 +398,7 @@ async fn run_app(
                 security: file_config.security.clone(),
             };
 
-            tracing::info!("Server starting on port {}", port);
+            tracing::info!("Server starting on {}:{}", config.bind_address, port);
             server::start_server(config, shutdown_token).await?;
         }
         Commands::Audit { path } => {

@@ -14,6 +14,7 @@ pub struct Config {
 
 #[derive(Deserialize, Debug, Default)]
 pub struct ServerConfig {
+    pub bind_address: Option<String>,
     pub port: Option<u16>,
     pub default_upstream: Option<String>,
     pub requests_per_minute: Option<u32>,

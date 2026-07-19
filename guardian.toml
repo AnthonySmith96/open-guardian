@@ -5,6 +5,8 @@
 # ==========================================
 
 [server]
+# Loopback-only by default. Set to "0.0.0.0" only when network exposure is intentional.
+bind_address = "127.0.0.1"
 port = 8080
 # Default upstream for requests that don't match a specific route
 default_upstream = "https://api.groq.com/openai"

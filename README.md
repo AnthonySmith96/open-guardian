@@ -409,6 +409,7 @@ graph TD
 
 ```toml
 [server]
+bind_address = "127.0.0.1" # Loopback-only default; use 0.0.0.0 only intentionally
 port = 8080
 default_upstream = "https://api.groq.com/openai"
 requests_per_minute = 10000
@@ -496,7 +497,7 @@ Add new languages or categories by creating a JSON file in `rules/` and referenc
 
 ```bash
 # Start the proxy
-open-guardian start [--port 8080] [--upstream URL] [--local] [--verbose]
+open-guardian start [--bind 127.0.0.1] [--port 8080] [--upstream URL] [--local] [--verbose]
 
 # Security audit — scan for exposed secrets and misconfigurations
 open-guardian audit [path]
