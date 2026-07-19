@@ -262,6 +262,8 @@ key_env = "OPENAI_API_KEY"
 
 is migrated in memory to `{{secret:env://OPENAI_API_KEY}}` with a warning. Defining both forms is an error.
 
+Every configuration section rejects unknown fields. Misspellings and fields such as `api_key = "..."` therefore fail startup instead of being silently ignored.
+
 ### Semantic load balancer
 
 The deterministic load balancer scores the already-inspected request text and selects a fast or smart tier. It is disabled in the default profile because the example tiers are external.

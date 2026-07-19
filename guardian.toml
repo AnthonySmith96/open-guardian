@@ -51,27 +51,27 @@ default_action = "audit"
 dlp_action = "redact"
 
 # Modular threat dictionaries (replaces old threats_path)
-# Add new languages/categories by adding a new [[security.dictionaries]] entry.
+# Add new languages/categories by adding a new [[security.policies.dictionaries]] entry.
 # Set enabled = false to disable a dictionary without deleting it.
-
-[[security.dictionaries]]
-id = "common"
-path = "rules/common.json"
-enabled = true
-
-[[security.dictionaries]]
-id = "jailbreaks_en"
-path = "rules/jailbreaks_en.json"
-enabled = true
-
-[[security.dictionaries]]
-id = "jailbreaks_es"
-path = "rules/jailbreaks_es.json"
-enabled = true
 
 # DevOps Mode (Whitelisting): Explicitly allow dangerous patterns
 # These bypass the Threat Engine signature check
 allowed_patterns = ["git pull", "git push", "kubectl get", "kubectl apply"]
+
+[[security.policies.dictionaries]]
+id = "common"
+path = "rules/common.json"
+enabled = true
+
+[[security.policies.dictionaries]]
+id = "jailbreaks_en"
+path = "rules/jailbreaks_en.json"
+enabled = true
+
+[[security.policies.dictionaries]]
+id = "jailbreaks_es"
+path = "rules/jailbreaks_es.json"
+enabled = true
 
 # ==========================================
 # THE SHERIFF (Local AI Governance Judge)

@@ -6,6 +6,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 #[derive(Deserialize, Debug, Default)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     pub server: Option<ServerConfig>,
     pub security: Option<SecurityConfig>,
@@ -16,6 +17,7 @@ pub struct Config {
 }
 
 #[derive(Deserialize, Debug, Default)]
+#[serde(deny_unknown_fields)]
 pub struct ServerConfig {
     pub bind_address: Option<String>,
     pub port: Option<u16>,
@@ -24,6 +26,7 @@ pub struct ServerConfig {
 }
 
 #[derive(Deserialize, Debug, Default, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct SecurityConfig {
     pub audit_log_path: Option<String>,
     pub block_threshold: Option<u32>,
@@ -43,6 +46,7 @@ impl SecurityConfig {
 /// Per-category DLP toggle switches.
 /// All default to `true` — disable specific categories as needed.
 #[derive(Deserialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct DlpConfig {
     #[serde(default = "DlpConfig::default_true")]
     pub email_redaction: bool,
@@ -79,6 +83,7 @@ impl Default for DlpConfig {
 
 /// A single dictionary source for threat signatures.
 #[derive(Deserialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct DictionarySource {
     pub id: String,
     pub path: String,
@@ -94,6 +99,7 @@ impl DictionarySource {
 
 /// Policy configuration: "Secure by Default, Configurable by Choice."
 #[derive(Deserialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct PolicyConfig {
     /// Default action when a threat is detected: block, audit, redact, allow
     #[serde(default = "PolicyConfig::default_action")]
@@ -170,6 +176,7 @@ impl PolicyAction {
 }
 
 #[derive(Deserialize, Debug, Default, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct JudgeConfig {
     pub ai_judge_enabled: Option<bool>,
     pub ai_judge_endpoint: Option<String>,
@@ -180,6 +187,7 @@ pub struct JudgeConfig {
 }
 
 #[derive(Deserialize, Debug, Default, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct RouteConfig {
     pub url: String,
     pub model: Option<String>,
@@ -201,6 +209,7 @@ pub struct VaultConfig {
 
 /// A single routing tier (fast or smart) in the Semantic Load Balancer.
 #[derive(Deserialize, Debug, Default, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct TierConfig {
     /// Upstream base URL for this tier.
     pub url: String,
@@ -215,6 +224,7 @@ pub struct TierConfig {
 /// Configuration block for the Semantic Load Balancer (SLB).
 /// Corresponds to `[load_balancer]` in guardian.toml.
 #[derive(Deserialize, Debug, Default, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct LoadBalancerConfig {
     /// Master switch. Set to `false` to disable SLB entirely.
     #[serde(default)]
@@ -460,6 +470,21 @@ mod tests {
         .expect("valid TOML");
 
         assert!(normalize_credentials(&mut config).is_err());
+    }
+
+    #[test]
+    fn unknown_fields_and_literal_route_keys_are_rejected() {
+        let unknown_top_level = r#"
+            [servre]
+            port = 8080
+        "#;
+        let literal_route_key = r#"
+            [routes]
+            model = { url = "https://example.invalid/v1", api_key = "literal-secret" }
+        "#;
+
+        assert!(toml::from_str::<Config>(unknown_top_level).is_err());
+        assert!(toml::from_str::<Config>(literal_route_key).is_err());
     }
 
     #[test]
