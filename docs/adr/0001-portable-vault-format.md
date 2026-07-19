@@ -1,6 +1,6 @@
 # ADR-0001: Portable vault built on the age v1 format
 
-- Status: Accepted for prototyping; production writes remain gated
+- Status: Accepted; read-only prototype implemented, production writes remain gated
 - Date: 2026-07-18
 - Owners: Open-Guardian maintainers
 
@@ -20,8 +20,8 @@ The portable vault will be an **age v1 compatible encrypted file**, not a custom
 - A separate recovery identity is another recipient. If protected by a human passphrase, the recovery identity—not the vault payload—is wrapped using age's passphrase/scrypt mechanism.
 - Device private identities live in the native OS credential store and never beside the vault.
 - Adding or revoking a device decrypts and re-encrypts the complete vault to a new recipient set and fresh file key.
-- The Rust implementation will use the `age` library behind a crate feature. The exact crate release will be pinned only after compatibility and security review because the crate remains pre-1.0 and labels itself beta.
-- Native identity storage will use `keyring-core` plus an explicitly selected platform store rather than enabling every store through an all-in-one default.
+- The Rust implementation pins `age` 0.12.1 behind the `portable-vault` crate feature. The crate remains pre-1.0 and labels itself beta, so upgrades require explicit review and interoperability reruns.
+- Native identity storage pins `keyring` 4.1.5 in its `v1` mode. Its target-specific dependency selection maps to Apple Keychain on macOS, Windows Credential Manager on Windows, and Secret Service on Linux. Direct `keyring-core` store selection remains the preferred migration if advanced lifecycle control is needed.
 
 The [age v1 specification](https://age-encryption.org/v1) defines a fresh random file key, independently wrapped recipient stanzas, an authenticated header, and a chunked ChaCha20-Poly1305 payload. The official Rust library supports multiple X25519 recipients through `Encryptor::with_recipients`; the `rage` CLI provides an independent interoperability target ([age Rust API](https://docs.rs/age/latest/age/), [rage repository](https://github.com/str4d/rage)). The keyring ecosystem provides platform-specific secure-store adapters and includes heap-leak testing guidance ([keyring-rs](https://github.com/open-source-cooperative/keyring-rs)).
 
@@ -57,6 +57,8 @@ The first implementation may use a simple versioned serialization, but it must m
 6. Golden compatibility tests decrypt with `rage` and decrypt a `rage` fixture.
 7. Corruption, truncation, wrong-identity, stale-generation, and concurrent-write tests.
 8. Fuzzing for the decrypted payload parser and `SecretRef` mapping.
+
+The implemented prototype uses bounded JSON with a 4 MiB plaintext limit, 4,096 entries, 64 fields per entry, 16,384 total fields, 64 KiB per value, and 2 MiB of total value data. It rejects unknown properties, unsupported versions, invalid timestamps, duplicate logical paths, duplicate fields, and non-canonical path/field names. Values are held in zeroizing, non-serializable wrappers. These limits reduce exposure but do not satisfy the outstanding fuzzing and independent interoperability gates by themselves.
 
 ## Identity and recovery lifecycle
 
@@ -164,4 +166,4 @@ Production `vault set`, `vault pair`, and `vault revoke` commands remain disable
 - Interoperability, fuzz, rollback, atomic-write, and heap-leak tests pass.
 - A maintainer security review approves the payload schema and recovery UX.
 
-Until then, `env://` is the only enabled SecretBroker backend and the vault work is non-destructive.
+Standard binaries enable `env://` and the namespaced `keychain://` backend. A read-only `vault://` backend is registered only when `[vault]` is explicitly configured. It performs no initialization, write, pairing, recovery, or recipient mutation and currently warns that rollback detection is unavailable.

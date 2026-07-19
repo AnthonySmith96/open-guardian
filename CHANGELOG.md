@@ -30,6 +30,7 @@
 - Added a feature-gated, bounded v1 vault payload parser that rejects duplicate paths/fields and keeps parsed values zeroizing and non-serializable.
 - Added a feature-gated, read-only age v1 `vault://` backend with bounded ciphertext/plaintext and X25519 device identities.
 - Added explicit `[vault]` configuration so standard binaries can unlock a read-only portable vault through an `env://` or `keychain://` identity reference.
+- Added a security reporting policy and documented the exact boundary between the read-only vault prototype and gated production writes.
 - Changed the default policy to `audit` for runbook/second-brain workflows; strict `block` remains available.
 
 ### Compatibility notes

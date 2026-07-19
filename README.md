@@ -18,6 +18,7 @@ Implemented on this branch:
 - Reversible, per-request DLP placeholders restored only after the response returns locally.
 - Complete response inspection, including SSE, with a 16 MiB bound.
 - Typed `SecretRef`, reusable `SecretBroker`, zeroizing `SecretValue`, `env://`, and namespaced native `keychain://` backends.
+- Feature-gated read-only age v1 portable vault with strict bounded payload validation.
 - Provider credentials injected only into the upstream `Authorization` header.
 - Read-compatible migration from deprecated `key_env` configuration.
 - Deterministic audit/block policy; optional AI Judge disabled by default.
@@ -108,6 +109,8 @@ src/
 ├── secrets/
 │   ├── mod.rs             SecretBroker, backend trait, env backend, SecretValue
 │   ├── keychain.rs        read-only, namespaced native credential-store backend
+│   ├── vault.rs           bounded read-only age decryption backend
+│   ├── vault_payload.rs   strict versioned plaintext parser
 │   └── reference.rs       canonical SecretRef parser and serde contract
 ├── pipeline/extract.rs    supported OpenAI-compatible request text extraction
 ├── security/
@@ -145,7 +148,7 @@ git clone https://github.com/AnthonySmith96/open-guardian.git
 cd open-guardian
 
 cargo test --all-targets --locked
-cargo clippy --all-targets -- -D warnings
+cargo clippy --all-targets --all-features --locked -- -D warnings
 cargo build --release --locked
 ```
 
@@ -500,8 +503,8 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the contributor workflow. It is being
 
 ### Portable vault
 
-- Read-only age interoperability prototype.
-- Versioned bounded payload parser and fixtures.
+- Current: read-only age 0.12.1 backend and bounded versioned payload parser.
+- Remaining: independent `age`/`rage` golden interoperability fixtures.
 - Atomic writes and native rollback anchor.
 - Device pairing, recovery, revocation, and conflict handling.
 - Fuzz, corruption, heap-leak, and cross-platform tests.
