@@ -401,7 +401,6 @@ async fn handler(
         let mut effective_credential: Option<SecretRef> =
             route.and_then(|route| route.credential.clone());
 
-        let mut modified = true;
         let mut risk_level: Option<&str> = None; // For X-Guardian-Risk header in audit mode
 
         // Accumulates message content for SLB scoring — populated during the scan
@@ -481,8 +480,6 @@ async fn handler(
                         path_str
                     ));
                     tracing::info!("DLP redaction applied for request to {}", path_str);
-                    modified = true;
-
                     log_security_event(
                         state.audit_log_path.clone(),
                         serde_json::json!({
@@ -715,7 +712,6 @@ async fn handler(
                     if let Some(m_val) = json_body.get_mut("model") {
                         *m_val = serde_json::Value::String(slb_model.clone());
                     }
-                    modified = true;
                 }
             }
         }
@@ -723,10 +719,19 @@ async fn handler(
         // ════════════════════════════════════════════════════
         // LAYER 3: FINAL EXECUTION
         // ════════════════════════════════════════════════════
-        let final_body = if modified {
-            Bytes::from(serde_json::to_vec(&json_body).unwrap_or_else(|_| body.to_vec()))
-        } else {
-            body.clone()
+        let final_body = match serde_json::to_vec(&json_body) {
+            Ok(serialized) => Bytes::from(serialized),
+            Err(_) => {
+                tracing::error!(
+                    "SECURITY: inspected request could not be serialized; refusing original body"
+                );
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    [(axum::http::header::CONTENT_TYPE, "application/json")],
+                    "{\"error\":\"request_serialization_failed\"}\n",
+                )
+                    .into_response();
+            }
         };
 
         banner::print_step(&format!(
