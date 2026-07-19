@@ -219,77 +219,64 @@ impl ProxyClient {
         // bypassed by splitting a secret across network chunks or SSE events.
         let bytes = read_response_body(response).await?;
 
-        // ── Response DLP and Body Reconstruction ──
-        // We must perform DLP on the response body bytes.
-        // If it's JSON/Text, we convert to string (lossy), check violations/redact,
-        // and then reconstruct the body.
-
-        // Try to interpret as text for DLP
-        // Note: This is a simple heuristic. Ideally we'd check Content-Type.
-        // But for v0.1.4 hotfix, we do best-effort string conversion.
-        let mut body_final = bytes.clone();
-
-        if let Ok(body_text) = String::from_utf8(bytes.clone()) {
-            // 1. Check Violations (Block Mode)
-            if let Some(violation) = check_for_violations(&body_text, dlp_config) {
-                if dlp_action == DlpAction::Block {
-                    banner::print_warning(&format!(
-                        "Response DLP BLOCKED: {} leak detected in response from {}",
-                        violation.description, target_path
-                    ));
-                    // Return 403
-                    let error_json = serde_json::json!({
-                       "error": "policy_violation",
-                       "category": violation.category,
-                       "details": "response_dlp_leak",
-                       "message": format!("Response contains prohibited data: {}", violation.description)
-                    });
-
-                    return Ok(axum::response::Response::builder()
-                        .status(StatusCode::FORBIDDEN)
-                        .header(axum::http::header::CONTENT_TYPE, "application/json")
-                        .body(axum::body::Body::from(serde_json::to_string(&error_json)?))
-                        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response()));
-                }
-            }
-
-            // 2. Redact (Redact Mode)
-            // We always run redaction if not blocked, to be safe.
-            // (If action is Block, we already returned. If Allow, we technically shouldn't,
-            // but dlp_action usually only has Block/Redact in this context).
-            let redacted_text = redact_pii(&body_text, dlp_config);
-            if redacted_text != body_text {
-                banner::print_success(&format!(
-                    "Redacted sensitive data in response from {}",
+        // A byte sequence that cannot be decoded as UTF-8 cannot pass text DLP.
+        // Fail closed instead of silently releasing an uninspectable body.
+        let body_text = match String::from_utf8(bytes) {
+            Ok(body) => body,
+            Err(_) => {
+                banner::print_warning(&format!(
+                    "Response DLP BLOCKED: non-UTF-8 body from {}",
                     target_path
                 ));
-                tracing::info!("DLP: Redacted response from {}", target_path);
+                let error_json = serde_json::json!({
+                    "error": "upstream_response_uninspectable",
+                    "details": "response_body_is_not_utf8"
+                });
+                return Ok(axum::response::Response::builder()
+                    .status(StatusCode::BAD_GATEWAY)
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .body(axum::body::Body::from(serde_json::to_string(&error_json)?))
+                    .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response()));
             }
-            let restored_text = redactions.restore(&redacted_text);
-            if restored_text != body_text {
-                tracing::info!(
-                    "DLP: restored {} request-scoped placeholder(s) locally",
-                    redactions.redaction_count()
-                );
-                body_final = restored_text.into_bytes();
+        };
+
+        if let Some(violation) = check_for_violations(&body_text, dlp_config) {
+            if dlp_action == DlpAction::Block {
+                banner::print_warning(&format!(
+                    "Response DLP BLOCKED: {} leak detected in response from {}",
+                    violation.description, target_path
+                ));
+                let error_json = serde_json::json!({
+                   "error": "policy_violation",
+                   "category": violation.category,
+                   "details": "response_dlp_leak",
+                   "message": format!("Response contains prohibited data: {}", violation.description)
+                });
+
+                return Ok(axum::response::Response::builder()
+                    .status(StatusCode::FORBIDDEN)
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .body(axum::body::Body::from(serde_json::to_string(&error_json)?))
+                    .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response()));
             }
         }
 
-        if body_final.last() != Some(&b'\n') {
-            body_final.push(b'\n');
+        let redacted_text = redact_pii(&body_text, dlp_config);
+        if redacted_text != body_text {
+            banner::print_success(&format!(
+                "Redacted sensitive data in response from {}",
+                target_path
+            ));
+            tracing::info!("DLP: Redacted response from {}", target_path);
         }
-
-        // Remove Content-Length as it might have changed
-        if res_builder
-            .headers_ref()
-            .unwrap()
-            .contains_key(http::header::CONTENT_LENGTH)
-        {
-            res_builder
-                .headers_mut()
-                .unwrap()
-                .remove(http::header::CONTENT_LENGTH);
+        let restored_text = redactions.restore(&redacted_text);
+        if restored_text != redacted_text {
+            tracing::info!(
+                "DLP: restored {} request-scoped placeholder(s) locally",
+                redactions.redaction_count()
+            );
         }
+        let body_final = restored_text.into_bytes();
 
         Ok(res_builder
             .body(axum::body::Body::from(body_final))
@@ -437,7 +424,53 @@ mod tests {
             .await
             .expect("read response");
 
-        assert_eq!(String::from_utf8_lossy(&response_body).trim(), original);
+        assert_eq!(response_body.as_ref(), original.as_bytes());
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn non_utf8_upstream_response_fails_closed() {
+        let app = Router::new().route(
+            "/binary",
+            any(|| async {
+                (
+                    [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
+                    axum::body::Bytes::from_static(&[0xff, 0xfe, 0xfd]),
+                )
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test server");
+        let address = listener.local_addr().expect("test address");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("serve test request");
+        });
+
+        let proxy =
+            super::ProxyClient::new(5, Arc::new(SecretBroker::new())).expect("proxy client");
+        let response = proxy
+            .forward_request(super::ForwardOptions {
+                upstream_url: &format!("http://{address}"),
+                credential: None,
+                method: axum::http::Method::GET,
+                path: "/binary",
+                headers: axum::http::HeaderMap::new(),
+                body: axum::body::Bytes::new(),
+                dlp_config: None,
+                dlp_action: crate::security::DlpAction::Redact,
+                redactions: crate::security::RedactionSession::new(),
+            })
+            .await
+            .expect("forward request");
+
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let response_body = axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .expect("read response");
+        assert!(!response_body.as_ref().contains(&0xff));
         server.abort();
     }
 }

@@ -370,6 +370,8 @@ If an upstream response echoes that exact token, the original value is restored 
 
 All responses, including `text/event-stream`, are buffered to a maximum of 16 MiB before release. This prevents a provider from bypassing a regex by splitting a secret across TCP chunks or SSE events.
 
+The current proxy is deliberately text-only: a non-UTF-8 upstream body is uninspectable and therefore fails closed with `502` instead of bypassing DLP. Valid response bytes are preserved exactly; Open-Guardian does not append delimiters or normalize provider output.
+
 The tradeoff is deliberate: v0.2 does not provide token-by-token delivery. A future streaming design must prove boundary-safe incremental inspection before this changes.
 
 Provider-generated sensitive data that was not represented by a current request placeholder remains irreversibly redacted.
