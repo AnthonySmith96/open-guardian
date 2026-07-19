@@ -194,6 +194,8 @@ Four enforcement modes for every security check:
 | `redact` | Sanitize sensitive data with anonymizer tokens and forward |
 | `allow` | No enforcement (not recommended for production) |
 
+`audit` is the default control-plane profile so runbooks and command examples remain discussable. Choose `block` explicitly for a strict chatbot/firewall deployment.
+
 ---
 
 ## 🌐 Smart Routing & Gateway Mode
@@ -439,7 +441,7 @@ ip_redaction = true
 phone_redaction = true
 
 [security.policies]
-default_action = "block"   # block | audit | redact | allow
+default_action = "audit"   # second-brain default; use block for a strict firewall
 dlp_action = "redact"      # block | redact
 allowed_patterns = ["git pull", "git push", "kubectl get", "kubectl apply"]
 

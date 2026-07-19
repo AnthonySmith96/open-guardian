@@ -40,11 +40,12 @@ phone_redaction = true
 # ==========================================
 [security.policies]
 # Default action when a threat is detected: block, audit, redact, allow
-# "block"  -> Return 403, stop the request
+# "block"  -> Return 403, stop the request (traditional firewall profile)
 # "audit"  -> Log WARN + inject X-Guardian-Risk header + forward
 # "redact" -> Sanitize and forward
 # "allow"  -> No enforcement (not recommended)
-default_action = "block"
+# Second-brain/control-plane default: classify commands in runbooks without blocking the conversation.
+default_action = "audit"
 
 # DLP behavior: "block" (stop request) or "redact" (replace with <TOKEN> anonymizers)
 dlp_action = "redact"

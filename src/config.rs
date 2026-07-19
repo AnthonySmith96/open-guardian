@@ -113,7 +113,7 @@ pub struct PolicyConfig {
 
 impl PolicyConfig {
     fn default_action() -> String {
-        "block".to_string()
+        "audit".to_string()
     }
     fn default_dlp_action() -> String {
         "redact".to_string()
@@ -414,5 +414,14 @@ mod tests {
         .expect("valid TOML");
 
         assert!(normalize_credentials(&mut config).is_err());
+    }
+
+    #[test]
+    fn default_policy_observes_without_blocking_runbook_text() {
+        assert_eq!(super::PolicyConfig::default().default_action, "audit");
+        assert_eq!(
+            super::PolicyAction::from_str("invalid-policy"),
+            super::PolicyAction::Block
+        );
     }
 }
