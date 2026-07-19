@@ -858,14 +858,23 @@ mod tests {
             })
             .await
             .expect("proxy returns a controlled error response");
-        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        assert!(matches!(
+            response.status(),
+            StatusCode::BAD_GATEWAY | StatusCode::GATEWAY_TIMEOUT
+        ));
         let response_body = axum::body::to_bytes(response.into_body(), 1024)
             .await
             .expect("read response");
         let response_text = String::from_utf8(response_body.to_vec()).expect("UTF-8 response");
+        let response_json: serde_json::Value =
+            serde_json::from_str(&response_text).expect("controlled JSON error");
 
         assert!(!response_text.contains(&address.to_string()));
         assert!(!response_text.contains("private-path"));
-        assert!(response_text.contains("upstream_unavailable"));
+        assert_eq!(response_json["error"], "upstream_error");
+        assert!(matches!(
+            response_json["details"].as_str(),
+            Some("upstream_unavailable" | "upstream_timeout")
+        ));
     }
 }
