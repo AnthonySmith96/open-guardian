@@ -58,6 +58,32 @@ fn build_bearer_header(raw_key: &str) -> Result<reqwest::header::HeaderValue> {
     Ok(header)
 }
 
+fn build_target_url(base_url: &str, path: &str) -> Result<reqwest::Url> {
+    let base = reqwest::Url::parse(base_url).context("configured upstream URL is invalid")?;
+    if !matches!(base.scheme(), "http" | "https")
+        || base.host_str().is_none()
+        || !base.username().is_empty()
+        || base.password().is_some()
+        || base.query().is_some()
+        || base.fragment().is_some()
+        || base.cannot_be_a_base()
+    {
+        anyhow::bail!("configured upstream URL violates the endpoint policy");
+    }
+
+    let mut target_path = path;
+    let normalized_base = base_url.trim_end_matches('/');
+    if normalized_base.ends_with("/v1") && target_path.starts_with("/v1") {
+        target_path = &target_path[3..];
+    }
+    if !target_path.is_empty() && !target_path.starts_with('/') {
+        anyhow::bail!("upstream request path must be absolute");
+    }
+
+    reqwest::Url::parse(&format!("{normalized_base}{target_path}"))
+        .context("upstream target URL is invalid")
+}
+
 /// All parameters needed to forward a single request upstream.
 /// Bundles the args to keep `forward_request` within clippy::too_many_arguments limits.
 pub struct ForwardOptions<'a> {
@@ -106,18 +132,9 @@ impl ProxyClient {
             dlp_action,
             redactions,
         } = opts;
-        let base_url = upstream_url;
-        let mut target_path = path;
+        let url = build_target_url(upstream_url, path)?;
 
-        if (base_url.ends_with("/v1") || base_url.ends_with("/v1/"))
-            && target_path.starts_with("/v1")
-        {
-            target_path = &target_path[3..];
-        }
-
-        let url = format!("{}{}", base_url, target_path);
-
-        let mut request_builder = self.client.request(method, &url).body(body);
+        let mut request_builder = self.client.request(method, url).body(body);
 
         if let Some(reference) = credential {
             let secret = self
@@ -215,7 +232,7 @@ impl ProxyClient {
             // let values bypass DLP at arbitrary chunk boundaries. Buffer first.
             banner::print_info(&format!(
                 "Buffering SSE response from {} for DLP inspection",
-                target_path
+                path
             ));
         }
 
@@ -231,7 +248,7 @@ impl ProxyClient {
             Err(_) => {
                 banner::print_warning(&format!(
                     "Response DLP BLOCKED: non-UTF-8 body from {}",
-                    target_path
+                    path
                 ));
                 let error_json = serde_json::json!({
                     "error": "upstream_response_uninspectable",
@@ -249,7 +266,7 @@ impl ProxyClient {
             if dlp_action == DlpAction::Block {
                 banner::print_warning(&format!(
                     "Response DLP BLOCKED: {} leak detected in response from {}",
-                    violation.description, target_path
+                    violation.description, path
                 ));
                 let error_json = serde_json::json!({
                    "error": "policy_violation",
@@ -270,9 +287,9 @@ impl ProxyClient {
         if redacted_text != body_text {
             banner::print_success(&format!(
                 "Redacted sensitive data in response from {}",
-                target_path
+                path
             ));
-            tracing::info!("DLP: Redacted response from {}", target_path);
+            tracing::info!("DLP: Redacted response from {}", path);
         }
         let restored_text = redactions.restore(&redacted_text);
         if restored_text != redacted_text {
@@ -291,7 +308,7 @@ impl ProxyClient {
 
 #[cfg(test)]
 mod tests {
-    use super::{append_response_chunk, build_bearer_header};
+    use super::{append_response_chunk, build_bearer_header, build_target_url};
     use async_trait::async_trait;
     use axum::{http::StatusCode, routing::any, Router};
     use open_guardian::secrets::{
@@ -337,6 +354,24 @@ mod tests {
         assert!(append_response_chunk(&mut buffer, &[1, 2, 3, 4], 8).is_ok());
         assert!(append_response_chunk(&mut buffer, &[5], 8).is_err());
         assert_eq!(buffer.len(), 8);
+    }
+
+    #[test]
+    fn target_url_normalizes_v1_and_rejects_embedded_credentials() {
+        let url = build_target_url("https://example.invalid/v1/", "/v1/chat/completions")
+            .expect("valid target");
+
+        assert_eq!(url.as_str(), "https://example.invalid/v1/chat/completions");
+        assert!(build_target_url(
+            "https://user:secret@example.invalid/v1",
+            "/v1/chat/completions"
+        )
+        .is_err());
+        assert!(build_target_url(
+            "https://example.invalid/v1?api_key=secret",
+            "/v1/chat/completions"
+        )
+        .is_err());
     }
 
     #[tokio::test]

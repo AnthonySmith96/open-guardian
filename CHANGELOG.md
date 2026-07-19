@@ -11,6 +11,7 @@
 - Disable the external semantic load balancer and legacy AI Judge by default.
 - Fail closed when a configured provider credential is missing, empty, malformed, duplicated, or unsupported.
 - Reject unknown configuration fields, including literal `api_key` fields, instead of silently ignoring them.
+- Reject model endpoints that embed userinfo, query parameters, fragments, or non-HTTP schemes; normalize `/v1` joins without duplicate slashes.
 - Buffer all responses, including SSE, to a 16 MiB inspection limit before release.
 - Reject non-UTF-8 upstream bodies that cannot pass text DLP, and stop appending a newline to provider responses.
 - Make `block` and `redact` cover the same secret, bearer-token, phone, and IPv4 detector categories.

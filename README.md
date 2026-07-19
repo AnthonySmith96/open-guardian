@@ -264,6 +264,8 @@ is migrated in memory to `{{secret:env://OPENAI_API_KEY}}` with a warning. Defin
 
 Every configuration section rejects unknown fields. Misspellings and fields such as `api_key = "..."` therefore fail startup instead of being silently ignored.
 
+Model and judge endpoints must be HTTP(S) base URLs without embedded userinfo, query parameters, or fragments. Credentials belong in `SecretRef`, never in a URL.
+
 ### Semantic load balancer
 
 The deterministic load balancer scores the already-inspected request text and selects a fast or smart tier. It is disabled in the default profile because the example tiers are external.

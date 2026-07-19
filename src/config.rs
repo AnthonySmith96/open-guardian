@@ -340,6 +340,49 @@ fn normalize_credentials(config: &mut Config) -> anyhow::Result<()> {
             ));
         }
     }
+    if let Some(server) = &config.server {
+        if let Some(url) = &server.default_upstream {
+            validate_endpoint(url, "server.default_upstream")?;
+        }
+    }
+    if let Some(routes) = &config.routes {
+        for (name, route) in routes {
+            validate_endpoint(&route.url, &format!("routes.{name}.url"))?;
+        }
+    }
+    if let Some(load_balancer) = &config.load_balancer {
+        if load_balancer.enabled || !load_balancer.fast_tier.url.is_empty() {
+            validate_endpoint(&load_balancer.fast_tier.url, "load_balancer.fast.url")?;
+        }
+        if load_balancer.enabled || !load_balancer.smart_tier.url.is_empty() {
+            validate_endpoint(&load_balancer.smart_tier.url, "load_balancer.smart.url")?;
+        }
+    }
+    if let Some(endpoint) = config
+        .judge
+        .as_ref()
+        .and_then(|judge| judge.ai_judge_endpoint.as_deref())
+    {
+        validate_endpoint(endpoint, "judge.ai_judge_endpoint")?;
+    }
+    Ok(())
+}
+
+fn validate_endpoint(raw: &str, location: &str) -> anyhow::Result<()> {
+    let url =
+        reqwest::Url::parse(raw).map_err(|_| anyhow::anyhow!("{location} is not a valid URL"))?;
+    if !matches!(url.scheme(), "http" | "https")
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || url.cannot_be_a_base()
+    {
+        return Err(anyhow::anyhow!(
+            "{location} must be an HTTP(S) base URL without userinfo, query, or fragment"
+        ));
+    }
     Ok(())
 }
 
@@ -485,6 +528,27 @@ mod tests {
 
         assert!(toml::from_str::<Config>(unknown_top_level).is_err());
         assert!(toml::from_str::<Config>(literal_route_key).is_err());
+    }
+
+    #[test]
+    fn endpoint_urls_cannot_embed_credentials_or_query_secrets() {
+        for url in [
+            "https://user:password@example.invalid/v1",
+            "https://example.invalid/v1?api_key=literal-secret",
+            "file:///tmp/model.sock",
+        ] {
+            let mut config: Config = toml::from_str(&format!(
+                r#"
+                [routes]
+                model = {{ url = "{url}" }}
+                "#
+            ))
+            .expect("syntactically valid TOML");
+
+            let error = normalize_credentials(&mut config).expect_err("unsafe URL accepted");
+            assert!(!error.to_string().contains("literal-secret"));
+            assert!(!error.to_string().contains("password"));
+        }
     }
 
     #[test]
