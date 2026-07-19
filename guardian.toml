@@ -74,11 +74,11 @@ allowed_patterns = ["git pull", "git push", "kubectl get", "kubectl apply"]
 
 # ==========================================
 # THE SHERIFF (Local AI Governance Judge)
-# Optional: Set ai_judge_enabled = false to run in "Heuristics Only" mode (faster, less Contextual)
+# Optional compatibility feature. Disabled by default: deterministic controls do not require a second model.
 # Model: Defaults to "qwen2.5:0.5b" but supports ANY model pulled in Ollama (e.g. "llama3", "mistral")
 # ==========================================
 [judge]
-ai_judge_enabled = true
+ai_judge_enabled = false
 ai_judge_endpoint = "http://127.0.0.1:11434/api/chat"
 # You can use any model name from `ollama list` here:
 ai_judge_model = "qwen2.5:0.5b"
@@ -91,9 +91,8 @@ judge_cache_ttl_seconds = 60
 judge_max_concurrency = 4
 
 # RESILIENCE MODE:
-# true = Fail-Open (Prioritize Availability). Recommended for DevOps Agents.
-# false = Fail-Close (Prioritize Security). Recommended for Enterprise.
-fail_open = true
+# If the optional judge is enabled, errors fail closed by default.
+fail_open = false
 
 # ==========================================
 # SMART ROUTING & CREDENTIAL INJECTION

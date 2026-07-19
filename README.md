@@ -22,7 +22,7 @@ Open-GuardIAn is a **high-performance security middleware / reverse proxy** buil
             ┌──────┴───────┐
             │  Layer 1     │  ← DLP Anonymizer + Threat Engine (Rust, <20µs)
             │  Layer 2     │  ← Heuristic Injection Scanner (Rust, <20µs)
-            │  Layer 3     │  ← AI Judge: qwen2.5:0.5b via Ollama (Contextual)
+            │  Layer 3     │  ← Optional legacy AI Judge (disabled by default)
             └──────────────┘
 ```
 
@@ -109,7 +109,7 @@ phone_redaction = true
 
 - **📋 Threat Engine Signatures** — Modular, internationalized database:
   - **Severity 100 (Block)**: `cat /etc/passwd`, `drop table`, `{{.*}}`, `eval(base64`, `union select`, `system.exit`
-  - **Severity 80 (Tag & Audit)**: `rm -rf`, `wget`, `curl`, `chmod`, `exec(`, `whoami` — Agent-First: these are tagged for AI Judge review, not blocked
+  - **Severity 80 (Tag & Audit)**: `rm -rf`, `wget`, `curl`, `chmod`, `exec(`, `whoami` — tagged for deterministic policy review rather than automatically blocked
   - **Severity 70 (Context)**: `hacker`, `malware`, `act as` — signals for context enrichment
   - **Emergency Kit**: Critical patterns hardcoded in the Rust binary — system is **never** unprotected
   - **DevOps Whitelisting**: Explicitly allow `git pull`, `kubectl apply`, etc.
@@ -117,20 +117,20 @@ phone_redaction = true
 
 > **Note**: Layer 2 uses advanced normalization-aware heuristics. Unlike heavier BERT models (like PromptGuard), this layer is deterministic, runs in **under 20 microseconds (<20µs)**, and ensures that legitimate traffic passes through with **zero perceptible overhead**.
 
-#### Layer 3: AI Judge — "The Sheriff" (Optional but Recommended)
+#### Layer 3: AI Judge — "The Sheriff" (Legacy Optional Feature)
 
 > [!NOTE]
-> **This layer is OPTIONAL.** Open-Guardian provides enterprise-grade security (Layer 1 & 2) even without the AI Judge.
+> **This layer is disabled by default.** Deterministic controls remain the security boundary; enabling a second model is a compatibility choice, not a requirement.
 
 - **🤠 Contextual Intent Analysis** — Uses a local LLM (via Ollama) to decide whether flagged commands are legitimate agent operations or actual attacks
 - **Agent-First Philosophy**: `rm -rf /tmp/cache` for cleanup? **SAFE**. `rm -rf /` without context? **UNSAFE**.
-- **Model Agnostic**: Defaults to `qwen2.5:0.5b` (fast/light), but **can use ANY model** available in your Ollama library (e.g., `llama3`, `mistral`, `gemma`).
+- **Model Agnostic**: When enabled, defaults to `qwen2.5:0.5b` and can use another model available through Ollama.
 - **RAG-Powered**: The Judge receives similar threat patterns as precedent in its system prompt
 - **Performance-Optimized**:
   - `moka` semantic cache — repeat prompts resolved in <1ms
   - `tokio::Semaphore` concurrency control — protects host resources
   - Configurable **fail-open** or **fail-closed** when the AI is unavailable
-- **Disable Strategy**: To run heuristics-only, set `ai_judge_enabled = false` in `guardian.toml`.
+- **Enable Strategy**: Set `ai_judge_enabled = true` only when contextual review justifies the extra model and latency.
 
 ### 🛣️ Smart Multi-Provider Router
 
@@ -274,8 +274,7 @@ response = client.chat.completions.create(
 ---
 
 > [!TIP]
-> **PRO TIP: HYBRID ARCHITECTURE**
-> For maximum performance, use a **Hybrid Setup**: Route your generation traffic to **Groq or OpenAI** (for speed) while keeping the **AI Judge** local on Ollama. This prevents your primary generation GPU from being saturated by security checks and guarantees the fastest possible response times.
+> The default profile needs only the generation model. The optional AI Judge requires a separate Ollama inference call and adds latency.
 
 ---
 
@@ -455,12 +454,12 @@ path = "rules/jailbreaks_es.json"
 enabled = true
 
 [judge]
-ai_judge_enabled = true
+ai_judge_enabled = false
 ai_judge_endpoint = "http://127.0.0.1:11434/api/chat"
 ai_judge_model = "qwen2.5:0.5b"     # Fallback: qwen2.5:3b
 judge_cache_ttl_seconds = 60
 judge_max_concurrency = 4
-fail_open = true                 # true = Prioritize reliability
+fail_open = false                # Fail closed if the optional judge is enabled
 
 [routes]
 "gpt-oss" = { url = "https://api.groq.com/openai", model = "openai/gpt-oss-120b", key_env = "GROQ_API_KEY" }
@@ -572,7 +571,7 @@ python audit_prod.py
 
 > **"Agent-First. Defense-in-Depth. Secure by Default."**
 
-1. **Agent-First** — We enable Agents to use tools (`curl`, `rm`, `wget`, `chmod`), not block them blindly. The AI Judge differentiates legitimate operations from attacks.
+1. **Agent-First** — Risky tools (`curl`, `rm`, `wget`, `chmod`) are handled through explicit deterministic policy instead of requiring a second model.
 2. **Layered Defense** — Layer 1 (DLP + Regex) works 100% without GPU. Layer 2 (Heuristics) catches obfuscated attacks. Layer 3 (AI Judge) provides contextual intent analysis.
 3. **Never Naked** — Even if all `rules/*.json` files are deleted, critical signatures are hardcoded in the Rust binary.
 4. **Fail-Safe** — If Layer 3 (AI) is off, Layer 1 & 2 provide "Trylon-level" security. Risky tools get logged, not blocked.
