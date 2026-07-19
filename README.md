@@ -17,7 +17,7 @@ Implemented on this branch:
 - Request scanning for all message roles, content parts, `prompt`, `input`, `instructions`, and tool-call arguments.
 - Reversible, per-request DLP placeholders restored only after the response returns locally.
 - Complete response inspection, including SSE, with a 16 MiB bound.
-- Typed `SecretRef`, reusable `SecretBroker`, zeroizing `SecretValue`, and a headless `env://` backend.
+- Typed `SecretRef`, reusable `SecretBroker`, zeroizing `SecretValue`, `env://`, and namespaced native `keychain://` backends.
 - Provider credentials injected only into the upstream `Authorization` header.
 - Read-compatible migration from deprecated `key_env` configuration.
 - Deterministic audit/block policy; optional AI Judge disabled by default.
@@ -26,7 +26,7 @@ Implemented on this branch:
 
 Not implemented yet:
 
-- Native keychain backends.
+- Administrative keychain set/delete commands and reveal/copy UI.
 - Writable portable `vault://` backend, pairing, recovery, or device revocation.
 - A user-facing secret reveal/copy flow.
 - RAG, note ingestion, Obsidian-style index, chat UI, or session compression.
@@ -108,6 +108,7 @@ src/
 ├── lib.rs                 reusable library entry point
 ├── secrets/
 │   ├── mod.rs             SecretBroker, backend trait, env backend, SecretValue
+│   ├── keychain.rs        read-only, namespaced native credential-store backend
 │   └── reference.rs       canonical SecretRef parser and serde contract
 ├── pipeline/extract.rs    supported OpenAI-compatible request text extraction
 ├── security/
@@ -295,7 +296,7 @@ Examples:
 {{secret:vault://infrastructure/proxmox#password}}
 ```
 
-Only `env://` is enabled today. Other schemes parse as references but fail closed until their backend is registered.
+`env://` and `keychain://` are enabled in standard binaries. `keychain://` maps only to the fixed application service `io.github.anthonysmith96.open-guardian`, so a reference cannot select another application's credential namespace. Build with `--no-default-features` for a headless binary that only registers `env://`. Other schemes parse as references but fail closed until their backend is registered.
 
 The parser rejects:
 

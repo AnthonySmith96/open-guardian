@@ -6,6 +6,9 @@
 
 mod reference;
 
+#[cfg(feature = "native-keyring")]
+mod keychain;
+
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::fmt;
@@ -13,6 +16,9 @@ use std::sync::Arc;
 use zeroize::Zeroizing;
 
 pub use reference::SecretRef;
+
+#[cfg(feature = "native-keyring")]
+pub use keychain::{KeychainBackend, KEYCHAIN_SERVICE};
 
 /// Ephemeral secret material. It cannot be cloned and never prints its value.
 pub struct SecretValue(Zeroizing<String>);

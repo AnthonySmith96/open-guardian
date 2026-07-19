@@ -15,6 +15,8 @@ use axum::{
 };
 use chrono::Utc;
 use colored::Colorize;
+#[cfg(feature = "native-keyring")]
+use open_guardian::secrets::KeychainBackend;
 use open_guardian::secrets::{EnvironmentBackend, SecretBroker, SecretRef};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -84,6 +86,8 @@ pub async fn start_server(
 ) -> anyhow::Result<()> {
     let mut secret_broker = SecretBroker::new();
     secret_broker.register(EnvironmentBackend)?;
+    #[cfg(feature = "native-keyring")]
+    secret_broker.register(KeychainBackend)?;
     let proxy = ProxyClient::new(config.timeout_seconds, Arc::new(secret_broker))?;
     let judge = Judge::new(config.judge_config.clone());
 
