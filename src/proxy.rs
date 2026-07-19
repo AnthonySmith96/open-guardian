@@ -3,9 +3,35 @@ use crate::config::DlpConfig;
 use crate::security::{check_for_violations, redact_pii, DlpAction};
 use anyhow::{Context, Result};
 use axum::response::IntoResponse;
+use futures_util::StreamExt;
 use http::{HeaderMap, Method, StatusCode};
 use reqwest::Client;
 use std::time::Duration;
+
+const MAX_INSPECTABLE_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
+
+fn append_response_chunk(buffer: &mut Vec<u8>, chunk: &[u8], limit: usize) -> Result<()> {
+    if buffer.len().saturating_add(chunk.len()) > limit {
+        anyhow::bail!(
+            "upstream response exceeds the {} byte inspection limit",
+            limit
+        );
+    }
+    buffer.extend_from_slice(chunk);
+    Ok(())
+}
+
+async fn read_response_body(response: reqwest::Response) -> Result<Vec<u8>> {
+    let mut stream = response.bytes_stream();
+    let mut body = Vec::new();
+
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.context("Failed to read upstream response body")?;
+        append_response_chunk(&mut body, &chunk, MAX_INSPECTABLE_RESPONSE_BYTES)?;
+    }
+
+    Ok(body)
+}
 
 fn build_bearer_header(raw_key: &str) -> Result<reqwest::header::HeaderValue> {
     let trimmed = raw_key.trim();
@@ -183,23 +209,18 @@ impl ProxyClient {
         let is_sse = content_type.contains("text/event-stream");
 
         if is_sse {
-            // Pass-through SSE streaming without buffering
+            // Releasing partial events before a secret pattern is complete would
+            // let values bypass DLP at arbitrary chunk boundaries. Buffer first.
             banner::print_info(&format!(
-                "Streaming SSE response from {} - passing through",
+                "Buffering SSE response from {} for DLP inspection",
                 target_path
             ));
-            let stream = response.bytes_stream();
-            return res_builder
-                .body(axum::body::Body::from_stream(stream))
-                .map_err(|e| anyhow::anyhow!("Failed to build SSE response: {}", e));
         }
 
-        // Non-streaming: buffer for DLP checking
-        let bytes = response
-            .bytes()
-            .await
-            .context("Failed to read upstream response body")?
-            .to_vec();
+        // All responses are bounded and buffered before DLP. This deliberately
+        // trades token-by-token delivery for a security boundary that cannot be
+        // bypassed by splitting a secret across network chunks or SSE events.
+        let bytes = read_response_body(response).await?;
 
         // ── Response DLP and Body Reconstruction ──
         // We must perform DLP on the response body bytes.
@@ -274,7 +295,7 @@ impl ProxyClient {
 
 #[cfg(test)]
 mod tests {
-    use super::build_bearer_header;
+    use super::{append_response_chunk, build_bearer_header};
 
     #[test]
     fn bearer_header_is_sensitive_and_trims_wrapping_quotes() {
@@ -292,5 +313,14 @@ mod tests {
     #[test]
     fn bearer_header_rejects_header_injection() {
         assert!(build_bearer_header("token\r\nx-forged: true").is_err());
+    }
+
+    #[test]
+    fn response_buffer_enforces_inspection_limit() {
+        let mut buffer = vec![0; 4];
+
+        assert!(append_response_chunk(&mut buffer, &[1, 2, 3, 4], 8).is_ok());
+        assert!(append_response_chunk(&mut buffer, &[5], 8).is_err());
+        assert_eq!(buffer.len(), 8);
     }
 }
