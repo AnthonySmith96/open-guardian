@@ -57,10 +57,16 @@ Open-GuardIAn is a **high-performance security middleware / reverse proxy** buil
 
 Open-GuardIAn uses a **Defense-in-Depth** security model — starting with cryptographic integrity and ending with cognitive analysis.
 
-#### Layer 0: HMAC Signed Integrity (Boot-Time Protection)
-The server **refuses to start** unless all rule files (`rules/*.json`) are cryptographically signed with a valid HMAC-SHA256 signature. This prevents attackers (or insiders) from tampering with the security definitions to bypass checks.
-- Command: `open-guardian sign` to generate signatures.
-- Verification: Automatic on startup.
+#### Layer 0: HMAC Signed Integrity (Optional Boot-Time Protection)
+Rule integrity is opt-in so a fresh install can start without a machine-specific secret. Once enabled, the server refuses to start when the manifest is missing, the key is unavailable, or a signed rule changes.
+
+```bash
+export GUARDIAN_HMAC_KEY="use-a-random-machine-secret"
+open-guardian sign
+open-guardian start
+```
+
+Keep the same `GUARDIAN_HMAC_KEY` available at startup. Do not commit it or the generated machine-specific manifest.
 
 #### Layer 1: DLP Anonymizer — "The Iron Dome" (CPU — Sub-millisecond — Always On)
 

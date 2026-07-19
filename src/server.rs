@@ -66,16 +66,13 @@ async fn health_handler() -> impl IntoResponse {
     (StatusCode::OK, "OK\n")
 }
 
-fn get_hmac_key() -> String {
+fn get_hmac_key() -> anyhow::Result<Option<String>> {
     match std::env::var("GUARDIAN_HMAC_KEY") {
-        Ok(key) if !key.is_empty() => key,
-        _ => {
-            if cfg!(debug_assertions) {
-                tracing::warn!("SEC: GUARDIAN_HMAC_KEY not set — using insecure dev key. DO NOT USE IN PRODUCTION.");
-                "insecure-dev-only-key".to_string()
-            } else {
-                panic!("FATAL: GUARDIAN_HMAC_KEY environment variable must be set in release mode");
-            }
+        Ok(key) if !key.is_empty() => Ok(Some(key)),
+        Ok(_) => Err(anyhow::anyhow!("GUARDIAN_HMAC_KEY cannot be empty")),
+        Err(std::env::VarError::NotPresent) => Ok(None),
+        Err(std::env::VarError::NotUnicode(_)) => {
+            Err(anyhow::anyhow!("GUARDIAN_HMAC_KEY is not valid Unicode"))
         }
     }
 }
@@ -100,12 +97,12 @@ pub async fn start_server(
         })
         .unwrap_or_else(|| std::path::PathBuf::from("."));
 
-    let integrity_checker = crate::security::integrity::RuleIntegrityChecker::new(
-        &rules_dir,
-        &get_hmac_key(),
-        false, // Emergency kit disabled by default
-    );
-    if let Ok(checker) = integrity_checker {
+    let manifest_exists = rules_dir.join(".manifest.json").is_file();
+    if let Some(hmac_key) = get_hmac_key()? {
+        let checker = crate::security::integrity::RuleIntegrityChecker::new(
+            &rules_dir, &hmac_key, false, // Emergency kit disabled by default
+        )
+        .map_err(|error| anyhow::anyhow!("failed to initialize rule integrity: {}", error))?;
         let result = checker.verify();
         if !result.verified {
             banner::print_error(&format!(
@@ -116,8 +113,15 @@ pub async fn start_server(
                 "Security: Rule file integrity verification failed"
             ));
         }
+    } else if manifest_exists {
+        return Err(anyhow::anyhow!(
+            "rules/.manifest.json exists but GUARDIAN_HMAC_KEY is unavailable"
+        ));
+    } else {
+        tracing::warn!(
+            "SEC: rule integrity is not configured; run `open-guardian sign` with GUARDIAN_HMAC_KEY to enable it"
+        );
     }
-    // If integrity checker fails to initialize (e.g., no manifest), continue (optional warning)
 
     let threat_engine = ThreatEngine::new(
         &config.policies.dictionaries,

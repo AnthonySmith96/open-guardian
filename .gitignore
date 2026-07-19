@@ -6,6 +6,7 @@ Cargo.lock
 .env
 *.env
 auth.toml
+rules/.manifest.json
 
 # Logs & Data
 *.log
