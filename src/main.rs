@@ -316,7 +316,7 @@ async fn run_app(
             local,
             verbose,
         } => {
-            let file_config = config::load_config();
+            let file_config = config::load_config()?;
 
             let upstream_url = if local {
                 let ollama_url = "http://127.0.0.1:11434/v1";
@@ -405,10 +405,11 @@ async fn run_app(
             audit::run_audit(&path)?;
         }
         Commands::Sign { rules_dir } => {
+            let rules_dir = config::resolve_resource_path(rules_dir);
             let key = std::env::var("GUARDIAN_HMAC_KEY")
                 .expect("FATAL: GUARDIAN_HMAC_KEY must be set in environment to sign rules");
 
-            banner::print_step(&format!("Signing rules in {}/...", rules_dir));
+            banner::print_step(&format!("Signing rules in {}/...", rules_dir.display()));
 
             let checker =
                 crate::security::integrity::RuleIntegrityChecker::new(&rules_dir, &key, false)

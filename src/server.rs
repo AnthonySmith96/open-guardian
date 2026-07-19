@@ -91,7 +91,8 @@ pub async fn start_server(
         .dictionaries
         .first()
         .and_then(|d| {
-            std::path::Path::new(&d.path)
+            crate::config::resolve_resource_path(&d.path)
+                .as_path()
                 .parent()
                 .map(|p| p.to_path_buf())
         })

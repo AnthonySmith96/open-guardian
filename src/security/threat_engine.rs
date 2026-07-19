@@ -200,19 +200,10 @@ pub struct ThreatEngine {
 
 impl ThreatEngine {
     pub fn new(dictionaries: &[DictionarySource], allowed_patterns: Vec<String>) -> Self {
-        let base_dir = if let Ok(exe_path) = std::env::current_exe() {
-            exe_path
-                .parent()
-                .map(|p| p.to_path_buf())
-                .unwrap_or_else(|| std::env::current_dir().unwrap_or_default())
-        } else {
-            std::env::current_dir().unwrap_or_default()
-        };
-
         let mut all_signatures = hardcoded_signatures();
 
         for dict in dictionaries.iter().filter(|d| d.enabled) {
-            let path = base_dir.join(&dict.path);
+            let path = crate::config::resolve_resource_path(&dict.path);
             match std::fs::read_to_string(&path) {
                 Ok(content) => match serde_json::from_str::<ThreatDatabase>(&content) {
                     Ok(db) => {

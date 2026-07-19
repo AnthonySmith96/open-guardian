@@ -2,6 +2,7 @@ use crate::banner;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::fs;
+use std::path::{Path, PathBuf};
 
 #[derive(Deserialize, Debug, Default)]
 pub struct Config {
@@ -220,37 +221,114 @@ pub struct LoadBalancerConfig {
     pub smart_tier: TierConfig,
 }
 
-pub fn load_config() -> Config {
-    // Determine the base directory: the directory containing the executable.
-    let base_dir = if let Ok(exe_path) = std::env::current_exe() {
-        exe_path
-            .parent()
-            .map(|p| p.to_path_buf())
-            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default())
-    } else {
-        std::env::current_dir().unwrap_or_default()
+fn executable_dir() -> Option<PathBuf> {
+    std::env::current_exe()
+        .ok()
+        .and_then(|path| path.parent().map(Path::to_path_buf))
+}
+
+/// Resolves packaged resources next to the binary, with the current directory
+/// as a development fallback. Absolute paths are never rewritten.
+pub fn resolve_resource_path(path: impl AsRef<Path>) -> PathBuf {
+    let path = path.as_ref();
+    if path.is_absolute() {
+        return path.to_path_buf();
+    }
+
+    if let Some(candidate) = executable_dir().map(|base| base.join(path)) {
+        if candidate.exists() {
+            return candidate;
+        }
+    }
+
+    std::env::current_dir().unwrap_or_default().join(path)
+}
+
+fn make_dictionary_paths_absolute(config: &mut Config, config_path: &Path) {
+    let Some(base_dir) = config_path.parent() else {
+        return;
+    };
+    let Some(policies) = config
+        .security
+        .as_mut()
+        .and_then(|security| security.policies.as_mut())
+    else {
+        return;
     };
 
-    let path = base_dir.join("guardian.toml");
-
-    if path.exists() {
-        match fs::read_to_string(&path) {
-            Ok(content) => match toml::from_str::<Config>(&content) {
-                Ok(config) => {
-                    banner::print_success(&format!("Loaded config from {}", path.display()));
-                    return config;
-                }
-                Err(e) => {
-                    banner::print_error(&format!("Failed to parse {}: {}", path.display(), e))
-                }
-            },
-            Err(e) => banner::print_error(&format!("Failed to read {}: {}", path.display(), e)),
+    for dictionary in &mut policies.dictionaries {
+        let path = Path::new(&dictionary.path);
+        if !path.is_absolute() {
+            dictionary.path = base_dir.join(path).to_string_lossy().into_owned();
         }
-    } else {
-        banner::print_warning(&format!(
-            "No guardian.toml found at {}. Using defaults.",
-            path.display()
-        ));
     }
-    Config::default()
+}
+
+pub fn load_config() -> anyhow::Result<Config> {
+    let explicit_path = std::env::var_os("GUARDIAN_CONFIG").map(PathBuf::from);
+    let path = if let Some(path) = explicit_path {
+        if !path.is_file() {
+            return Err(anyhow::anyhow!(
+                "GUARDIAN_CONFIG does not point to a readable file: {}",
+                path.display()
+            ));
+        }
+        Some(path)
+    } else {
+        executable_dir()
+            .map(|base| base.join("guardian.toml"))
+            .filter(|candidate| candidate.is_file())
+            .or_else(|| {
+                std::env::current_dir()
+                    .ok()
+                    .map(|base| base.join("guardian.toml"))
+                    .filter(|candidate| candidate.is_file())
+            })
+    };
+
+    let Some(path) = path else {
+        banner::print_warning("No guardian.toml found next to the binary or in the current directory. Using defaults.");
+        return Ok(Config::default());
+    };
+
+    let content = fs::read_to_string(&path)
+        .map_err(|error| anyhow::anyhow!("failed to read {}: {}", path.display(), error))?;
+    let mut config = toml::from_str::<Config>(&content)
+        .map_err(|error| anyhow::anyhow!("failed to parse {}: {}", path.display(), error))?;
+    make_dictionary_paths_absolute(&mut config, &path);
+    banner::print_success(&format!("Loaded config from {}", path.display()));
+    Ok(config)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{make_dictionary_paths_absolute, Config};
+
+    #[test]
+    fn dictionary_paths_are_anchored_to_the_config_file() {
+        let mut config: Config = toml::from_str(
+            r#"
+            [security.policies]
+            [[security.policies.dictionaries]]
+            id = "test"
+            path = "rules/test.json"
+            "#,
+        )
+        .expect("valid test config");
+        let base = std::env::temp_dir().join("open-guardian-config-test");
+        let config_path = base.join("guardian.toml");
+
+        make_dictionary_paths_absolute(&mut config, &config_path);
+
+        let dictionary = &config
+            .security
+            .expect("security")
+            .policies
+            .expect("policies")
+            .dictionaries[0];
+        assert_eq!(
+            std::path::Path::new(&dictionary.path),
+            base.join("rules/test.json")
+        );
+    }
 }
