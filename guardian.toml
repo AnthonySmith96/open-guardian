@@ -57,8 +57,7 @@ dlp_action = "redact"
 [[security.dictionaries]]
 id = "common"
 path = "rules/common.json"
-# Explicit opt-in: enabling this example sends prompts to external providers.
-enabled = false
+enabled = true
 
 [[security.dictionaries]]
 id = "jailbreaks_en"
@@ -124,7 +123,8 @@ fail_open = false
 # Prompts scoring < smart_threshold go to the "fast" tier.
 # ==========================================
 [load_balancer]
-enabled = true
+# Explicit opt-in: enabling this example sends matching prompts to external providers.
+enabled = false
 smart_threshold = 40
 
 # "Economy" line: cheap + fast (ideal for simple queries)

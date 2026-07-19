@@ -474,4 +474,27 @@ mod tests {
             super::PolicyAction::Audit
         );
     }
+
+    #[test]
+    fn distributed_profile_stays_local_and_keeps_all_rule_sets_enabled() {
+        let config: Config = toml::from_str(include_str!("../guardian.toml"))
+            .expect("distributed guardian.toml must parse");
+
+        assert_eq!(
+            config
+                .server
+                .as_ref()
+                .and_then(|server| server.default_upstream.as_deref()),
+            Some("http://127.0.0.1:11434/v1")
+        );
+        assert!(!config.load_balancer.expect("load balancer").enabled);
+        assert!(config
+            .security
+            .expect("security")
+            .policies
+            .expect("policies")
+            .dictionaries
+            .iter()
+            .all(|dictionary| dictionary.enabled));
+    }
 }

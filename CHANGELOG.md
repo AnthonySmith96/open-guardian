@@ -7,6 +7,7 @@
 - Wired the general request extractor into the active pipeline for all message roles, content parts, prompts, inputs, instructions, and tool arguments.
 - Bind to `127.0.0.1` by default; public/LAN binds require explicit configuration.
 - Route unmatched models to local Ollama-compatible inference by default.
+- Keep the distributed `guardian.toml` load balancer disabled and all deterministic rule dictionaries enabled.
 - Disable the external semantic load balancer and legacy AI Judge by default.
 - Fail closed when a configured provider credential is missing, empty, malformed, duplicated, or unsupported.
 - Buffer all responses, including SSE, to a 16 MiB inspection limit before release.
