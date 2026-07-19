@@ -37,6 +37,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 atty = "0.2"
 tokio-util = "0.7"
 unidecode = "0.3"
+zeroize = "1.9"
 
 # Security module dependencies (from Open-GuardIAn)
 # HMAC for rule file integrity

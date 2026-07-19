@@ -1489,6 +1489,7 @@ dependencies = [
  "unidecode",
  "urlencoding",
  "windows-service",
+ "zeroize",
 ]
 
 [[package]]

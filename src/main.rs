@@ -5,6 +5,7 @@ mod logger;
 mod pipeline;
 mod proxy;
 mod router;
+pub mod secrets;
 mod security;
 mod server;
 
