@@ -2,6 +2,7 @@
 name = "open-guardian"
 version = "0.1.5"
 edition = "2021"
+rust-version = "1.88"
 license = "Apache-2.0"
 authors = ["Anthony Smith"]
 description = "The High-Performance Firewall for AI Agents."

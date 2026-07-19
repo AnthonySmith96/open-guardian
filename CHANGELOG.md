@@ -1,5 +1,34 @@
 # Changelog
 
+## Unreleased - v0.2 hardening and SecretBroker
+
+### Security fixes
+
+- Wired the general request extractor into the active pipeline for all message roles, content parts, prompts, inputs, instructions, and tool arguments.
+- Bind to `127.0.0.1` by default; public/LAN binds require explicit configuration.
+- Route unmatched models to local Ollama-compatible inference by default.
+- Disable the external semantic load balancer and legacy AI Judge by default.
+- Fail closed when a configured provider credential is missing, empty, malformed, duplicated, or unsupported.
+- Buffer all responses, including SSE, to a 16 MiB inspection limit before release.
+- Resolve configuration/rule resources predictably and fail on malformed discovered configuration.
+- Make HMAC rule integrity opt-in for fresh installs but fail closed once a key or manifest establishes the contract.
+- Commit `Cargo.lock` for reproducible binary dependency resolution.
+
+### New
+
+- Added canonical `SecretRef` parsing and serde support.
+- Added reusable `SecretBroker`, `SecretBackend`, zeroizing `SecretValue`, and `env://` backend as a Rust library API.
+- Replaced provider `key_env` usage with typed `credential = "{{secret:...}}"` references; legacy configuration migrates in memory with a warning.
+- Added per-request reversible DLP placeholders with random nonces and local post-response restoration.
+- Added an age-v1-based portable vault ADR with explicit production implementation gates.
+- Changed the default policy to `audit` for runbook/second-brain workflows; strict `block` remains available.
+
+### Compatibility notes
+
+- Token-by-token SSE delivery is temporarily unavailable because response DLP is now fail-closed and boundary-safe.
+- `default_action = "redact"` is a deprecated alias for `audit`; `dlp_action` controls actual DLP behavior.
+- The writable `vault://` backend is not enabled yet.
+
 ## v0.1.5 - Security Hardening (2026-02-20)
 
 ### CRITICAL Security Fixes
