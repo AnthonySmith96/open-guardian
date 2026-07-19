@@ -772,7 +772,7 @@ async fn handler(
                 banner::print_error(&format!("Internal Proxy Error: {}", e));
                 let error_msg = serde_json::json!({
                     "error": "proxy_internal_error",
-                    "message": format!("Internal failure in proxy: {}", e)
+                    "message": "Internal proxy failure"
                 });
                 let body = serde_json::to_string(&error_msg).unwrap_or_default() + "\n";
                 (
@@ -871,7 +871,7 @@ async fn handler(
                 banner::print_error(&format!("Internal Proxy Error: {}", e));
                 let error_msg = serde_json::json!({
                     "error": "proxy_internal_error",
-                    "message": format!("Internal failure in proxy: {}", e)
+                    "message": "Internal proxy failure"
                 });
                 let body = serde_json::to_string(&error_msg).unwrap_or_default() + "\n";
                 (

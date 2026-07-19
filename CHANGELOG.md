@@ -14,6 +14,7 @@
 - Make `block` and `redact` cover the same secret, bearer-token, phone, and IPv4 detector categories.
 - Return normal CLI errors instead of panicking on invalid service metadata or missing/empty rule-signing keys.
 - Block traversal and encoded traversal in every proxied path, including paths under `/v1` and `/api`.
+- Keep upstream URLs, paths, and internal transport/backend errors out of client-facing error bodies.
 - Resolve configuration/rule resources predictably and fail on malformed discovered configuration.
 - Make HMAC rule integrity opt-in for fresh installs but fail closed once a key or manifest establishes the contract.
 - Commit `Cargo.lock` for reproducible binary dependency resolution.

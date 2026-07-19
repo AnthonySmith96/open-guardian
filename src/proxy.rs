@@ -161,9 +161,14 @@ impl ProxyClient {
                     StatusCode::BAD_GATEWAY
                 };
 
+                let detail = if e.is_timeout() {
+                    "upstream_timeout"
+                } else {
+                    "upstream_unavailable"
+                };
                 let error_json = serde_json::json!({
                     "error": "upstream_error",
-                    "details": format!("{}", e)
+                    "details": detail
                 });
 
                 let body_str = serde_json::to_string(&error_json)
@@ -472,5 +477,40 @@ mod tests {
             .expect("read response");
         assert!(!response_body.as_ref().contains(&0xff));
         server.abort();
+    }
+
+    #[tokio::test]
+    async fn upstream_network_errors_do_not_disclose_target_details() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("reserve address");
+        let address = listener.local_addr().expect("test address");
+        drop(listener);
+
+        let proxy =
+            super::ProxyClient::new(1, Arc::new(SecretBroker::new())).expect("proxy client");
+        let response = proxy
+            .forward_request(super::ForwardOptions {
+                upstream_url: &format!("http://{address}"),
+                credential: None,
+                method: axum::http::Method::GET,
+                path: "/private-path",
+                headers: axum::http::HeaderMap::new(),
+                body: axum::body::Bytes::new(),
+                dlp_config: None,
+                dlp_action: crate::security::DlpAction::Redact,
+                redactions: crate::security::RedactionSession::new(),
+            })
+            .await
+            .expect("proxy returns a controlled error response");
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let response_body = axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .expect("read response");
+        let response_text = String::from_utf8(response_body.to_vec()).expect("UTF-8 response");
+
+        assert!(!response_text.contains(&address.to_string()));
+        assert!(!response_text.contains("private-path"));
+        assert!(response_text.contains("upstream_unavailable"));
     }
 }
