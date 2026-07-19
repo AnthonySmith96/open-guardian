@@ -221,6 +221,8 @@ The `env://` backend supports headless deployments and migration from `key_env`.
 
 `SecretRef`, `SecretBroker`, `SecretBackend`, and `SecretValue` are also exported by the Rust library target (`open_guardian::secrets`) so local applications can reuse the broker without starting the proxy.
 
+The portable `vault://` backend is specified in [ADR-0001](docs/adr/0001-portable-vault-format.md). Writes remain intentionally disabled until the pinned age/keyring implementation passes interoperability, rollback, atomic-write, fuzz, and heap-leak gates.
+
 ### 🏷️ Model Aliasing
 You can define custom model names (aliases) that map to specific provider versions. This allows you to swap underlying models without changing application code.
 
