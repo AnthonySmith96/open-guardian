@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased - v0.2 hardening and SecretBroker
+## v0.2.0 - Local-first hardening and SecretBroker (2026-07-18)
 
 ### Security fixes
 

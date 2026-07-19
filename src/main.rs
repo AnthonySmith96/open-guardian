@@ -32,6 +32,7 @@ use windows_service::{
 #[derive(Parser)]
 #[command(name = "open-guardian")]
 #[command(about = "The Shield for the Age of AI Agents", long_about = None)]
+#[command(version)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,

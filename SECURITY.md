@@ -4,7 +4,7 @@ Open-Guardian is a local privacy and secret boundary. Treat defects involving mo
 
 ## Supported versions
 
-Security fixes are developed against the latest tagged release and the current `main` branch. The v0.2 hardening work is pre-release until it is reviewed and tagged; do not treat an unreviewed branch build as a stable security boundary.
+Security fixes are developed against the latest tagged release and the current `main` branch. Portable-vault writes, device pairing, recovery, and rollback protection remain explicitly outside the stable security boundary.
 
 ## Private reporting
 

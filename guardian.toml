@@ -1,7 +1,7 @@
 # ==========================================
 # OPEN-GUARDIAN CONFIGURATION
 # "Secure by Default, Configurable by Choice."
-# Open-Guardian v0.2 development profile
+# Open-Guardian v0.2.0 local-first profile
 # ==========================================
 
 [server]

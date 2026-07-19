@@ -1,4 +1,4 @@
-# Test Dockerfile for Open-Guardian v0.2 development
+# Test Dockerfile for Open-Guardian v0.2.0
 # Usage: docker build -f Dockerfile.test .
 
 FROM rust:1.88-slim AS builder

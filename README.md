@@ -8,9 +8,9 @@ It is intentionally **not** a second-brain UI, indexer, autonomous agent, or gen
 
 ## Project status
 
-The `main` release is v0.1.5. The v0.2 work described here is under active development and should be treated as pre-release until reviewed and tagged.
+The current source release is v0.2.0. It is a local-first security gateway with a reusable SecretBroker; the portable vault remains intentionally read-only and pre-production.
 
-Implemented on this branch:
+Implemented in v0.2.0:
 
 - Loopback-only bind and local Ollama-compatible upstream by default.
 - External providers require an explicit model route, explicit load-balancer activation, or the explicit `--upstream` CLI override.
@@ -485,11 +485,11 @@ Security-sensitive changes should remain small and independently reviewable. At 
 
 Do not add a secret backend that shells out, reads arbitrary paths, or prompts interactively from `resolve()`. Administrative operations belong in separate explicit APIs.
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the contributor workflow. It is being updated alongside v0.2; code and this README are authoritative when older guidance conflicts.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the contributor workflow. Code, security invariants, and this README are authoritative when older guidance conflicts.
 
 ## Roadmap
 
-### v0.2 hardening
+### v0.2.0 hardening
 
 - Complete request-field pipeline integration.
 - Local network and model routing defaults.

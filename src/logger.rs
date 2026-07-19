@@ -30,7 +30,10 @@ pub fn init_logger() {
         )
         .init();
 
-    tracing::info!("Open-GuardIAn Logger v0.1.1 Initialized. Rolling daily logs in logs/. Non-blocking I/O enabled.");
+    tracing::info!(
+        "Open-Guardian Logger v{} initialized. Rolling daily logs in logs/. Non-blocking I/O enabled.",
+        env!("CARGO_PKG_VERSION")
+    );
 
     // leaked guard is intentional to keep logging alive for the process duration
     std::mem::forget(_guard);

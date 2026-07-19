@@ -21,7 +21,11 @@ pub fn print_banner() {
     );
     println!(
         "   {}",
-        "Version 0.1.0 (Public Beta) — Licensed under Apache-2.0".bright_black()
+        format!(
+            "Version {} — Licensed under Apache-2.0",
+            env!("CARGO_PKG_VERSION")
+        )
+        .bright_black()
     );
     println!();
     println!(
@@ -45,7 +49,10 @@ pub fn print_startup_info(addr: &str, upstream: &str, action: &str, dlp: &str, m
         "{}  {: <18}  {}",
         side,
         "🛡️  STATUS:".bright_green().bold(),
-        "SHIELD ACTIVE (v1.0.0)".on_green().black().bold()
+        format!("SHIELD ACTIVE (v{})", env!("CARGO_PKG_VERSION"))
+            .on_green()
+            .black()
+            .bold()
     );
     println!(
         "{}  {: <18}  {}",
