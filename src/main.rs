@@ -11,6 +11,8 @@ mod server;
 use crate::server::ServerConfig;
 use clap::{Parser, Subcommand};
 use service_manager::*;
+#[cfg(windows)]
+use std::io::IsTerminal;
 use std::net::TcpStream;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -335,7 +337,7 @@ async fn main() -> anyhow::Result<()> {
     // Check if we are being run as a Windows service
     #[cfg(windows)]
     {
-        if std::env::args().any(|arg| arg == "start") && !atty::is(atty::Stream::Stdout) {
+        if std::env::args().any(|arg| arg == "start") && !std::io::stdout().is_terminal() {
             tracing::info!("Starting as Windows Service...");
             return service_dispatcher::start("com.openguardian.shield", ffi_service_main)
                 .map_err(|e| anyhow::anyhow!("Service dispatcher failed: {}", e));

@@ -23,6 +23,7 @@
 - Resolve configuration/rule resources predictably and fail on malformed discovered configuration.
 - Make HMAC rule integrity opt-in for fresh installs but fail closed once a key or manifest establishes the contract.
 - Commit `Cargo.lock` for reproducible binary dependency resolution.
+- Remove the unmaintained direct `atty` dependency and unused `governor` stack; CI now denies RustSec findings with one documented build-time exception inherited from the latest `age` release.
 - Pin CI actions, test on Rust 1.88 across Linux/macOS/Windows, and verify both desktop and headless feature sets.
 - Package binaries with configuration, rules, documentation, SHA-256 checksums, and build-provenance attestations.
 

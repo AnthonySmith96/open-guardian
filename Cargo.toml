@@ -41,7 +41,6 @@ service-manager = "0.10"
 tracing = "0.1"
 tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-atty = "0.2"
 tokio-util = "0.7"
 unidecode = "0.3"
 zeroize = "1.9"
@@ -54,10 +53,6 @@ age = { version = "=0.12.1", optional = true, default-features = false }
 hmac-sha256 = "1.1"
 sha2 = "0.10"
 hex = "0.4"
-
-# Rate limiting
-governor = "0.5"
-nonzero_ext = "0.3"
 
 # Unicode normalization
 unicode-normalization = "0.1"

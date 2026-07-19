@@ -18,6 +18,24 @@ env:
   CARGO_NET_RETRY: 10
 
 jobs:
+  dependency-audit:
+    name: RustSec dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install minimum supported Rust
+        uses: dtolnay/rust-toolchain@39b0b3842c7e8bbf6904c0bfc3d9006fdd4dc4e0 # 1.88.0
+
+      - name: Install pinned cargo-audit
+        run: cargo install cargo-audit --version 0.22.2 --locked
+
+      - name: Reject RustSec vulnerabilities and warnings
+        # age 0.12.1 is the latest release; this is an unmaintained build-time
+        # proc-macro warning, not a runtime vulnerability. See SECURITY.md.
+        run: cargo audit --deny warnings --ignore RUSTSEC-2026-0173
+
   quality:
     name: Format, lint, and feature gates
     runs-on: ubuntu-latest

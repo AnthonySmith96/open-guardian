@@ -6,6 +6,10 @@ Open-Guardian is a local privacy and secret boundary. Treat defects involving mo
 
 Security fixes are developed against the latest tagged release and the current `main` branch. Portable-vault writes, device pairing, recovery, and rollback protection remain explicitly outside the stable security boundary.
 
+## Audited dependency exception
+
+CI denies every RustSec vulnerability and warning except `RUSTSEC-2026-0173`. That advisory marks `proc-macro-error2` as unmaintained; it is a build-time transitive dependency of `age` 0.12.1, which is the latest available `age` release. It is not linked as executable runtime code. The exception is explicit so it can be removed as soon as `age` replaces that dependency.
+
 ## Private reporting
 
 Use GitHub's **Security > Report a vulnerability** flow for this repository when available. Do not open a public issue containing a real credential, private prompt, vault, identity, internal address, or exploit that puts deployed users at immediate risk.
