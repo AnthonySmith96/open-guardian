@@ -1,6 +1,8 @@
 use crate::banner;
 use crate::config::DlpConfig;
-use crate::security::{check_for_violations, redact_pii, DlpAction, RedactionSession};
+use crate::security::{
+    check_for_violations, redact_pii, DlpAction, DlpViolation, RedactionSession,
+};
 use anyhow::{Context, Result};
 use axum::response::IntoResponse;
 use futures_util::StreamExt;
@@ -12,6 +14,202 @@ use std::time::Duration;
 use zeroize::Zeroizing;
 
 const MAX_INSPECTABLE_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
+
+#[derive(Default)]
+struct ResponseMutation {
+    redacted: bool,
+    restored: bool,
+}
+
+impl ResponseMutation {
+    fn merge(&mut self, other: Self) {
+        self.redacted |= other.redacted;
+        self.restored |= other.restored;
+    }
+}
+
+#[derive(Debug)]
+enum ResponseInspectionError {
+    DlpViolation(DlpViolation),
+    InvalidJson,
+}
+
+fn transform_response_string(
+    input: &str,
+    dlp_config: Option<&DlpConfig>,
+    dlp_action: DlpAction,
+    redactions: &RedactionSession,
+) -> std::result::Result<(String, ResponseMutation), ResponseInspectionError> {
+    if dlp_action == DlpAction::Block {
+        if let Some(violation) = check_for_violations(input, dlp_config) {
+            return Err(ResponseInspectionError::DlpViolation(violation));
+        }
+    }
+
+    let redacted = if dlp_action == DlpAction::Redact {
+        redact_pii(input, dlp_config)
+    } else {
+        input.to_string()
+    };
+    let restored = redactions.restore(&redacted);
+
+    let mutation = ResponseMutation {
+        redacted: redacted != input,
+        restored: restored != redacted,
+    };
+    Ok((restored, mutation))
+}
+
+fn transform_json_strings(
+    value: &mut serde_json::Value,
+    dlp_config: Option<&DlpConfig>,
+    dlp_action: DlpAction,
+    redactions: &RedactionSession,
+) -> std::result::Result<ResponseMutation, ResponseInspectionError> {
+    let mut mutation = ResponseMutation::default();
+
+    match value {
+        serde_json::Value::String(text) => {
+            let (transformed, string_mutation) =
+                transform_response_string(text, dlp_config, dlp_action, redactions)?;
+            if string_mutation.redacted || string_mutation.restored {
+                *text = transformed;
+            }
+            mutation.merge(string_mutation);
+        }
+        serde_json::Value::Array(values) => {
+            for value in values {
+                mutation.merge(transform_json_strings(
+                    value, dlp_config, dlp_action, redactions,
+                )?);
+            }
+        }
+        serde_json::Value::Object(values) => {
+            let original = std::mem::take(values);
+            for (key, mut value) in original {
+                let (key, key_mutation) =
+                    transform_response_string(&key, dlp_config, dlp_action, redactions)?;
+                mutation.merge(key_mutation);
+                mutation.merge(transform_json_strings(
+                    &mut value, dlp_config, dlp_action, redactions,
+                )?);
+                if values.insert(key, value).is_some() {
+                    return Err(ResponseInspectionError::InvalidJson);
+                }
+            }
+        }
+        serde_json::Value::Null | serde_json::Value::Bool(_) | serde_json::Value::Number(_) => {}
+    }
+
+    Ok(mutation)
+}
+
+fn is_json_content_type(content_type: &str) -> bool {
+    let media_type = content_type
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    media_type == "application/json" || media_type.ends_with("+json")
+}
+
+fn inspect_json_response(
+    body: &str,
+    dlp_config: Option<&DlpConfig>,
+    dlp_action: DlpAction,
+    redactions: &RedactionSession,
+) -> std::result::Result<(String, ResponseMutation), ResponseInspectionError> {
+    let mut value = serde_json::from_str::<serde_json::Value>(body)
+        .map_err(|_| ResponseInspectionError::InvalidJson)?;
+    let mutation = transform_json_strings(&mut value, dlp_config, dlp_action, redactions)?;
+    if mutation.redacted || mutation.restored {
+        let serialized =
+            serde_json::to_string(&value).map_err(|_| ResponseInspectionError::InvalidJson)?;
+        Ok((serialized, mutation))
+    } else {
+        Ok((body.to_string(), mutation))
+    }
+}
+
+fn inspect_sse_response(
+    body: &str,
+    dlp_config: Option<&DlpConfig>,
+    dlp_action: DlpAction,
+    redactions: &RedactionSession,
+) -> std::result::Result<(String, ResponseMutation), ResponseInspectionError> {
+    let mut output = String::with_capacity(body.len());
+    let mut mutation = ResponseMutation::default();
+
+    for segment in body.split_inclusive('\n') {
+        let (line, ending) = if let Some(line) = segment.strip_suffix("\r\n") {
+            (line, "\r\n")
+        } else if let Some(line) = segment.strip_suffix('\n') {
+            (line, "\n")
+        } else {
+            (segment, "")
+        };
+
+        let Some(after_field) = line.strip_prefix("data:") else {
+            output.push_str(line);
+            output.push_str(ending);
+            continue;
+        };
+        let separator_len = usize::from(after_field.starts_with(' '));
+        let prefix_len = "data:".len() + separator_len;
+        let payload = &line[prefix_len..];
+
+        if payload == "[DONE]" || payload.is_empty() {
+            output.push_str(line);
+            output.push_str(ending);
+            continue;
+        }
+
+        let (transformed, line_mutation) =
+            if let Ok(mut value) = serde_json::from_str::<serde_json::Value>(payload) {
+                let line_mutation =
+                    transform_json_strings(&mut value, dlp_config, dlp_action, redactions)?;
+                if line_mutation.redacted || line_mutation.restored {
+                    (
+                        serde_json::to_string(&value)
+                            .map_err(|_| ResponseInspectionError::InvalidJson)?,
+                        line_mutation,
+                    )
+                } else {
+                    (payload.to_string(), line_mutation)
+                }
+            } else {
+                transform_response_string(payload, dlp_config, dlp_action, redactions)?
+            };
+
+        output.push_str(&line[..prefix_len]);
+        output.push_str(&transformed);
+        output.push_str(ending);
+        mutation.merge(line_mutation);
+    }
+
+    Ok((output, mutation))
+}
+
+fn inspect_response_text(
+    body: &str,
+    content_type: &str,
+    dlp_config: Option<&DlpConfig>,
+    dlp_action: DlpAction,
+    redactions: &RedactionSession,
+) -> std::result::Result<(String, ResponseMutation), ResponseInspectionError> {
+    if body.is_empty() {
+        return Ok((String::new(), ResponseMutation::default()));
+    }
+
+    if content_type.contains("text/event-stream") {
+        inspect_sse_response(body, dlp_config, dlp_action, redactions)
+    } else if is_json_content_type(content_type) {
+        inspect_json_response(body, dlp_config, dlp_action, redactions)
+    } else {
+        transform_response_string(body, dlp_config, dlp_action, redactions)
+    }
+}
 
 fn append_response_chunk(buffer: &mut Vec<u8>, chunk: &[u8], limit: usize) -> Result<()> {
     if buffer.len().saturating_add(chunk.len()) > limit {
@@ -223,7 +421,8 @@ impl ProxyClient {
             .headers()
             .get(http::header::CONTENT_TYPE)
             .and_then(|v| v.to_str().ok())
-            .unwrap_or("");
+            .unwrap_or("")
+            .to_string();
 
         let is_sse = content_type.contains("text/event-stream");
 
@@ -262,8 +461,15 @@ impl ProxyClient {
             }
         };
 
-        if let Some(violation) = check_for_violations(&body_text, dlp_config) {
-            if dlp_action == DlpAction::Block {
+        let (body_final, mutation) = match inspect_response_text(
+            &body_text,
+            &content_type,
+            dlp_config,
+            dlp_action,
+            &redactions,
+        ) {
+            Ok(inspected) => inspected,
+            Err(ResponseInspectionError::DlpViolation(violation)) => {
                 banner::print_warning(&format!(
                     "Response DLP BLOCKED: {} leak detected in response from {}",
                     violation.description, path
@@ -281,34 +487,50 @@ impl ProxyClient {
                     .body(axum::body::Body::from(serde_json::to_string(&error_json)?))
                     .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response()));
             }
-        }
+            Err(ResponseInspectionError::InvalidJson) => {
+                banner::print_warning(&format!(
+                    "Response DLP BLOCKED: malformed JSON body from {}",
+                    path
+                ));
+                let error_json = serde_json::json!({
+                    "error": "upstream_response_uninspectable",
+                    "details": "response_body_is_invalid_json"
+                });
+                return Ok(axum::response::Response::builder()
+                    .status(StatusCode::BAD_GATEWAY)
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .body(axum::body::Body::from(serde_json::to_string(&error_json)?))
+                    .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response()));
+            }
+        };
 
-        let redacted_text = redact_pii(&body_text, dlp_config);
-        if redacted_text != body_text {
+        if mutation.redacted {
             banner::print_success(&format!(
                 "Redacted sensitive data in response from {}",
                 path
             ));
             tracing::info!("DLP: Redacted response from {}", path);
         }
-        let restored_text = redactions.restore(&redacted_text);
-        if restored_text != redacted_text {
+        if mutation.restored {
             tracing::info!(
                 "DLP: restored {} request-scoped placeholder(s) locally",
                 redactions.redaction_count()
             );
         }
-        let body_final = restored_text.into_bytes();
 
         Ok(res_builder
-            .body(axum::body::Body::from(body_final))
+            .body(axum::body::Body::from(body_final.into_bytes()))
             .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response()))
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{append_response_chunk, build_bearer_header, build_target_url};
+    use super::{
+        append_response_chunk, build_bearer_header, build_target_url, inspect_response_text,
+        ResponseInspectionError,
+    };
+    use crate::security::{DlpAction, RedactionSession};
     use async_trait::async_trait;
     use axum::{http::StatusCode, routing::any, Router};
     use open_guardian::secrets::{
@@ -354,6 +576,115 @@ mod tests {
         assert!(append_response_chunk(&mut buffer, &[1, 2, 3, 4], 8).is_ok());
         assert!(append_response_chunk(&mut buffer, &[5], 8).is_err());
         assert_eq!(buffer.len(), 8);
+    }
+
+    #[test]
+    fn json_response_dlp_never_rewrites_numeric_metadata() {
+        let body = r#"{"created":1784428111,"queue_time":0.172,"seed":1844674407370955,"choices":[{"message":{"content":"GUARDIAN_GROQ_OK"}}]}"#;
+        let session = RedactionSession::new();
+
+        let (inspected, mutation) =
+            inspect_response_text(body, "application/json", None, DlpAction::Redact, &session)
+                .expect("valid Groq-style response");
+
+        assert_eq!(inspected, body);
+        assert!(!mutation.redacted);
+        assert!(!mutation.restored);
+        let parsed: serde_json::Value = serde_json::from_str(&inspected).expect("valid JSON");
+        assert_eq!(parsed["created"], 1_784_428_111_u64);
+        assert_eq!(parsed["queue_time"], 0.172);
+        assert_eq!(parsed["seed"], 1_844_674_407_370_955_u64);
+    }
+
+    #[test]
+    fn json_response_dlp_redacts_strings_without_changing_value_types() {
+        let body = r#"{"created":1784428111,"message":"gsk_abcdefghijklmnopqrstuvwxyz"}"#;
+        let session = RedactionSession::new();
+
+        let (inspected, mutation) = inspect_response_text(
+            body,
+            "application/json; charset=utf-8",
+            None,
+            DlpAction::Redact,
+            &session,
+        )
+        .expect("inspect response");
+
+        let parsed: serde_json::Value = serde_json::from_str(&inspected).expect("valid JSON");
+        assert_eq!(parsed["created"], 1_784_428_111_u64);
+        assert_eq!(parsed["message"], "<KEY>");
+        assert!(mutation.redacted);
+    }
+
+    #[test]
+    fn json_response_dlp_also_inspects_object_keys() {
+        let body = r#"{"gsk_abcdefghijklmnopqrstuvwxyz":"value"}"#;
+        let session = RedactionSession::new();
+
+        let (inspected, mutation) =
+            inspect_response_text(body, "application/json", None, DlpAction::Redact, &session)
+                .expect("inspect response");
+
+        let parsed: serde_json::Value = serde_json::from_str(&inspected).expect("valid JSON");
+        assert_eq!(parsed["<KEY>"], "value");
+        assert!(mutation.redacted);
+    }
+
+    #[test]
+    fn empty_json_response_body_is_valid_for_head_and_no_content() {
+        let session = RedactionSession::new();
+
+        let (inspected, mutation) =
+            inspect_response_text("", "application/json", None, DlpAction::Redact, &session)
+                .expect("empty body");
+
+        assert!(inspected.is_empty());
+        assert!(!mutation.redacted);
+        assert!(!mutation.restored);
+    }
+
+    #[test]
+    fn response_placeholder_restoration_remains_valid_json() {
+        let original = r#"api_key="abcdefghijklmnopqrstuvwxyz123456""#;
+        let mut session = RedactionSession::new();
+        let placeholder = session.redact(original, None);
+        let body = serde_json::json!({ "message": placeholder }).to_string();
+
+        let (inspected, mutation) =
+            inspect_response_text(&body, "application/json", None, DlpAction::Redact, &session)
+                .expect("inspect response");
+
+        let parsed: serde_json::Value = serde_json::from_str(&inspected).expect("valid JSON");
+        assert_eq!(parsed["message"], original);
+        assert!(mutation.restored);
+    }
+
+    #[test]
+    fn sse_response_dlp_preserves_numeric_json_fields() {
+        let body =
+            "data: {\"created\":1784428111,\"delta\":{\"content\":\"ok\"}}\n\ndata: [DONE]\n\n";
+        let session = RedactionSession::new();
+
+        let (inspected, mutation) =
+            inspect_response_text(body, "text/event-stream", None, DlpAction::Redact, &session)
+                .expect("inspect SSE");
+
+        assert_eq!(inspected, body);
+        assert!(!mutation.redacted);
+    }
+
+    #[test]
+    fn declared_json_that_cannot_be_parsed_fails_closed() {
+        let session = RedactionSession::new();
+        let result = inspect_response_text(
+            "{not-json}",
+            "application/problem+json",
+            None,
+            DlpAction::Redact,
+            &session,
+        );
+
+        assert!(matches!(result, Err(ResponseInspectionError::InvalidJson)));
     }
 
     #[test]

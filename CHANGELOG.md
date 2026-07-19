@@ -19,6 +19,7 @@
 - Block traversal and encoded traversal in every proxied path, including paths under `/v1` and `/api`.
 - Keep upstream URLs, paths, and internal transport/backend errors out of client-facing error bodies.
 - Fail closed if an inspected JSON request cannot be reserialized instead of falling back to its original unredacted bytes.
+- Inspect JSON and SSE response string fields structurally so DLP cannot corrupt numeric metadata, and restore request-scoped placeholders without producing invalid JSON.
 - Resolve configuration/rule resources predictably and fail on malformed discovered configuration.
 - Make HMAC rule integrity opt-in for fresh installs but fail closed once a key or manifest establishes the contract.
 - Commit `Cargo.lock` for reproducible binary dependency resolution.
