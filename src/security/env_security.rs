@@ -113,10 +113,9 @@ pub fn check_env_security(env_path: &Path, config: &EnvSecurityConfig) -> EnvSec
                 });
 
                 if config.warn_world_readable && is_world_readable {
-                    let mode_str = format!("{:o}", mode);
+                    let mode_str = format!("{mode:o}");
                     warnings.push(format!(
-                        "INSECURE: .env file is world-readable (mode: {}). Anyone on the system can read your secrets!",
-                        mode_str
+                        "INSECURE: .env file is world-readable (mode: {mode_str}). Anyone on the system can read your secrets!"
                     ));
                     warnings.push("RECOMMENDATION: Run: chmod 600 .env".to_string());
 
@@ -130,8 +129,7 @@ pub fn check_env_security(env_path: &Path, config: &EnvSecurityConfig) -> EnvSec
 
                 if config.warn_world_readable && is_group_readable && !is_world_readable {
                     warnings.push(format!(
-                        "WARNING: .env file is group-readable (mode: {:o}). Consider restricting to owner only.",
-                        mode
+                        "WARNING: .env file is group-readable (mode: {mode:o}). Consider restricting to owner only."
                     ));
                 }
 
@@ -143,8 +141,7 @@ pub fn check_env_security(env_path: &Path, config: &EnvSecurityConfig) -> EnvSec
                             // Owned by root - that's fine
                         } else if uid != current_uid {
                             warnings.push(format!(
-                                "WARNING: .env file is owned by UID {}, not root or current user (UID {})",
-                                uid, current_uid
+                                "WARNING: .env file is owned by UID {uid}, not root or current user (UID {current_uid})"
                             ));
                         }
                     }
@@ -158,7 +155,7 @@ pub fn check_env_security(env_path: &Path, config: &EnvSecurityConfig) -> EnvSec
             }
         }
         Err(e) => {
-            warnings.push(format!("Could not check .env permissions: {}", e));
+            warnings.push(format!("Could not check .env permissions: {e}"));
         }
     }
 

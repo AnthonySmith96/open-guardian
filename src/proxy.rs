@@ -213,10 +213,7 @@ fn inspect_response_text(
 
 fn append_response_chunk(buffer: &mut Vec<u8>, chunk: &[u8], limit: usize) -> Result<()> {
     if buffer.len().saturating_add(chunk.len()) > limit {
-        anyhow::bail!(
-            "upstream response exceeds the {} byte inspection limit",
-            limit
-        );
+        anyhow::bail!("upstream response exceeds the {limit} byte inspection limit");
     }
     buffer.extend_from_slice(chunk);
     Ok(())
@@ -249,7 +246,7 @@ fn build_bearer_header(raw_key: &str) -> Result<reqwest::header::HeaderValue> {
         anyhow::bail!("configured API key is empty");
     }
 
-    let authorization = Zeroizing::new(format!("Bearer {}", clean_key));
+    let authorization = Zeroizing::new(format!("Bearer {clean_key}"));
     let mut header = reqwest::header::HeaderValue::from_str(authorization.as_str())
         .context("configured API key cannot be encoded as an Authorization header")?;
     header.set_sensitive(true);
@@ -369,7 +366,7 @@ impl ProxyClient {
                 resp
             }
             Err(e) => {
-                banner::print_error(&format!("Upstream request failed: {}", e));
+                banner::print_error(&format!("Upstream request failed: {e}"));
                 let status = if e.is_timeout() {
                     StatusCode::GATEWAY_TIMEOUT
                 } else {
@@ -430,8 +427,7 @@ impl ProxyClient {
             // Releasing partial events before a secret pattern is complete would
             // let values bypass DLP at arbitrary chunk boundaries. Buffer first.
             banner::print_info(&format!(
-                "Buffering SSE response from {} for DLP inspection",
-                path
+                "Buffering SSE response from {path} for DLP inspection"
             ));
         }
 
@@ -445,10 +441,7 @@ impl ProxyClient {
         let body_text = match String::from_utf8(bytes) {
             Ok(body) => body,
             Err(_) => {
-                banner::print_warning(&format!(
-                    "Response DLP BLOCKED: non-UTF-8 body from {}",
-                    path
-                ));
+                banner::print_warning(&format!("Response DLP BLOCKED: non-UTF-8 body from {path}"));
                 let error_json = serde_json::json!({
                     "error": "upstream_response_uninspectable",
                     "details": "response_body_is_not_utf8"
@@ -489,8 +482,7 @@ impl ProxyClient {
             }
             Err(ResponseInspectionError::InvalidJson) => {
                 banner::print_warning(&format!(
-                    "Response DLP BLOCKED: malformed JSON body from {}",
-                    path
+                    "Response DLP BLOCKED: malformed JSON body from {path}"
                 ));
                 let error_json = serde_json::json!({
                     "error": "upstream_response_uninspectable",
@@ -505,10 +497,7 @@ impl ProxyClient {
         };
 
         if mutation.redacted {
-            banner::print_success(&format!(
-                "Redacted sensitive data in response from {}",
-                path
-            ));
+            banner::print_success(&format!("Redacted sensitive data in response from {path}"));
             tracing::info!("DLP: Redacted response from {}", path);
         }
         if mutation.restored {

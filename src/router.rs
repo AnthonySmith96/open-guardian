@@ -162,8 +162,7 @@ mod tests {
         let score = calculate_complexity("Hello, how are you?");
         assert!(
             score < 40,
-            "Simple greeting should score below 40, got {}",
-            score
+            "Simple greeting should score below 40, got {score}"
         );
     }
 
@@ -174,8 +173,7 @@ mod tests {
         );
         assert!(
             score >= 40,
-            "Complex technical prompt should score >= 40, got {}",
-            score
+            "Complex technical prompt should score >= 40, got {score}"
         );
     }
 
@@ -186,9 +184,7 @@ mod tests {
             calculate_complexity("explain sorting\n```python\ndef bubble_sort(lst): pass\n```");
         assert!(
             with_block > without,
-            "Code block should increase score: {} vs {}",
-            with_block,
-            without
+            "Code block should increase score: {with_block} vs {without}"
         );
     }
 
@@ -205,8 +201,7 @@ mod tests {
         let score = calculate_complexity("rust debug refactor");
         assert!(
             score >= 70,
-            "Three keywords should yield >= 70, got {}",
-            score
+            "Three keywords should yield >= 70, got {score}"
         );
     }
 }

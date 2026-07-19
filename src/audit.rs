@@ -3,7 +3,7 @@ use std::fs;
 use std::path::Path;
 
 pub fn run_audit(path: &str) -> anyhow::Result<()> {
-    banner::print_step(&format!("Auditing directory: {}", path));
+    banner::print_step(&format!("Auditing directory: {path}"));
 
     let audit_path = Path::new(path);
     if !audit_path.exists() {
@@ -18,7 +18,7 @@ pub fn run_audit(path: &str) -> anyhow::Result<()> {
         let file_name = entry.file_name().into_string().unwrap_or_default();
 
         if files_to_check.contains(&file_name.as_str()) {
-            banner::print_warning(&format!("Found sensitive config file: {}", file_name));
+            banner::print_warning(&format!("Found sensitive config file: {file_name}"));
 
             #[cfg(unix)]
             {
@@ -27,8 +27,7 @@ pub fn run_audit(path: &str) -> anyhow::Result<()> {
                 let mode = metadata.permissions().mode();
                 if mode & 0o007 != 0 {
                     banner::print_error(&format!(
-                        "CRITICAL: {} is world-readable! (Mode: {:o})",
-                        file_name, mode
+                        "CRITICAL: {file_name} is world-readable! (Mode: {mode:o})"
                     ));
                 }
             }
@@ -38,8 +37,7 @@ pub fn run_audit(path: &str) -> anyhow::Result<()> {
                 if let Ok(content) = fs::read_to_string(entry.path()) {
                     if content.contains("0.0.0.0") {
                         banner::print_warning(&format!(
-                            "{} binds to 0.0.0.0 (Potentially exposed)",
-                            file_name
+                            "{file_name} binds to 0.0.0.0 (Potentially exposed)"
                         ));
                     }
                 }

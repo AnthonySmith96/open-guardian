@@ -95,8 +95,7 @@ pub fn check_request_headers(
                 if is_suspicious {
                     blocked = true;
                     reason = Some(format!(
-                        "Transfer-Encoding header contains dangerous value '{}' - potential request smuggling",
-                        te
+                        "Transfer-Encoding header contains dangerous value '{te}' - potential request smuggling"
                     ));
 
                     if config.log_blocked_requests {
@@ -132,7 +131,7 @@ pub fn check_request_headers(
 
     if let Some(ref cl_str) = cl_value {
         if cl_str.parse::<u64>().is_err() {
-            warnings.push(format!("Invalid Content-Length value: {}", cl_str));
+            warnings.push(format!("Invalid Content-Length value: {cl_str}"));
         }
     }
 

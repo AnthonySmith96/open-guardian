@@ -145,7 +145,7 @@ impl UnicodeNormalizer {
         if codepoint_count > self.config.max_code_points {
             issues.push(NormalizationIssue {
                 issue_type: IssueType::TooLong,
-                description: format!("Content has {} code points, exceeds limit", codepoint_count),
+                description: format!("Content has {codepoint_count} code points, exceeds limit"),
                 position: None,
             });
             normalized = normalized

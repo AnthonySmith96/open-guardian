@@ -44,7 +44,7 @@ pub fn print_startup_info(addr: &str, upstream: &str, action: &str, dlp: &str, m
     let width = 60;
     let line = "─".repeat(width).bright_black();
 
-    println!("{}{}{}", corner_tl, line, corner_tr);
+    println!("{corner_tl}{line}{corner_tr}");
     println!(
         "{}  {: <18}  {}",
         side,
@@ -84,7 +84,7 @@ pub fn print_startup_info(addr: &str, upstream: &str, action: &str, dlp: &str, m
         "🤖 AI JUDGE:".bright_white(),
         model.bright_magenta()
     );
-    println!("{}{}{}", corner_bl, line, corner_br);
+    println!("{corner_bl}{line}{corner_br}");
     println!();
 }
 

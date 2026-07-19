@@ -136,7 +136,7 @@ pub async fn start_server(
         let checker = crate::security::integrity::RuleIntegrityChecker::new(
             &rules_dir, &hmac_key, false, // Emergency kit disabled by default
         )
-        .map_err(|error| anyhow::anyhow!("failed to initialize rule integrity: {}", error))?;
+        .map_err(|error| anyhow::anyhow!("failed to initialize rule integrity: {error}"))?;
         let result = checker.verify();
         if !result.verified {
             banner::print_error(&format!(
@@ -210,8 +210,8 @@ pub async fn start_server(
     banner::print_startup_info(
         &addr.to_string(),
         &config.default_upstream,
-        &format!("{:?}", default_action),
-        &format!("{:?}", dlp_action),
+        &format!("{default_action:?}"),
+        &format!("{dlp_action:?}"),
         &model_info,
     );
 
@@ -241,7 +241,7 @@ fn log_security_event(path: Option<String>, event: Value) {
                     .open(log_path)
                     .await
                 {
-                    let _ = file.write_all(format!("{}\n", line).as_bytes()).await;
+                    let _ = file.write_all(format!("{line}\n").as_bytes()).await;
                 }
             }
         }
@@ -298,7 +298,7 @@ async fn handler(
     body: Bytes,
 ) -> Response {
     let global_start = std::time::Instant::now();
-    let path_str = format!("/{}", path);
+    let path_str = format!("/{path}");
     tracing::info!("{} request to {}", method, path_str);
 
     if state.verbose {
@@ -317,7 +317,7 @@ async fn handler(
         let block_reason = header_result
             .reason
             .unwrap_or_else(|| "Unknown smuggling attempt".to_string());
-        banner::print_warning(&format!("Request smuggling attempt: {}", block_reason));
+        banner::print_warning(&format!("Request smuggling attempt: {block_reason}"));
         log_security_event(
             state.audit_log_path.clone(),
             serde_json::json!({
@@ -476,8 +476,7 @@ async fn handler(
 
                 if cleaned != content_text {
                     banner::print_success(&format!(
-                        "Redacted sensitive data in request to {}",
-                        path_str
+                        "Redacted sensitive data in request to {path_str}"
                     ));
                     tracing::info!("DLP redaction applied for request to {}", path_str);
                     log_security_event(
@@ -576,7 +575,7 @@ async fn handler(
                 // LAYER 1: HARD SHIELD (Deterministic Block)
                 if scan_result.blocked {
                     let tags_str = scan_result.risk_tags.join(", ");
-                    banner::print_warning(&format!("BLOCK (Severity 90+): {}", tags_str));
+                    banner::print_warning(&format!("BLOCK (Severity 90+): {tags_str}"));
 
                     log_security_event(
                         state.audit_log_path.clone(),
@@ -601,7 +600,7 @@ async fn handler(
                             return block_response(
                                 "CriticalThreat",
                                 "threat_signature_blocked",
-                                &format!("Access Denied: Critical Threat Detected ({})", tags_str),
+                                &format!("Access Denied: Critical Threat Detected ({tags_str})"),
                             );
                         }
                     }
@@ -636,8 +635,7 @@ async fn handler(
 
                     if !judge_passed {
                         banner::print_error(&format!(
-                            "AI Judge blocked request to {}: Violates Safety Policy",
-                            path_str
+                            "AI Judge blocked request to {path_str}: Violates Safety Policy"
                         ));
                         tracing::error!(
                             "Semantic policy block by AI Judge for request to {}",
@@ -735,8 +733,7 @@ async fn handler(
         };
 
         banner::print_step(&format!(
-            "Forwarding to [{}] target: {}...",
-            model_alias, upstream_url
+            "Forwarding to [{model_alias}] target: {upstream_url}..."
         ));
         let response = match state
             .proxy
@@ -774,7 +771,7 @@ async fn handler(
                 }
             }
             Err(e) => {
-                banner::print_error(&format!("Internal Proxy Error: {}", e));
+                banner::print_error(&format!("Internal Proxy Error: {e}"));
                 let error_msg = serde_json::json!({
                     "error": "proxy_internal_error",
                     "message": "Internal proxy failure"
@@ -807,8 +804,7 @@ async fn handler(
         if !state.security_config.allow_non_json_passthrough {
             // SECURITY: Default-deny non-JSON requests
             banner::print_blocking(&format!(
-                "Non-JSON request to {}: BLOCKED (security policy)",
-                path_str
+                "Non-JSON request to {path_str}: BLOCKED (security policy)"
             ));
             tracing::warn!(
                 "SECURITY: Non-JSON request blocked. Set allow_non_json_passthrough=true to allow (not recommended)."
@@ -822,8 +818,7 @@ async fn handler(
 
         // Passthrough mode enabled (explicit opt-in, NOT recommended for security)
         banner::print_warning(&format!(
-            "Non-JSON passthrough enabled (SECURITY RISK): {}",
-            path_str
+            "Non-JSON passthrough enabled (SECURITY RISK): {path_str}"
         ));
         tracing::warn!("SECURITY: Non-JSON passthrough enabled — security checks bypassed!");
 
@@ -840,8 +835,7 @@ async fn handler(
         };
         if let Some(violation) = check_for_violations(body_str, Some(&state.dlp_config)) {
             banner::print_warning(&format!(
-                "DLP violation detected in non-JSON body to {}",
-                path_str
+                "DLP violation detected in non-JSON body to {path_str}"
             ));
             if state.dlp_action == DlpAction::Block {
                 return block_response(
@@ -873,7 +867,7 @@ async fn handler(
         {
             Ok(res) => res,
             Err(e) => {
-                banner::print_error(&format!("Internal Proxy Error: {}", e));
+                banner::print_error(&format!("Internal Proxy Error: {e}"));
                 let error_msg = serde_json::json!({
                     "error": "proxy_internal_error",
                     "message": "Internal proxy failure"
@@ -890,8 +884,7 @@ async fn handler(
 
         if state.verbose {
             banner::print_warning(&format!(
-                "Non-JSON passthrough to {}: SECURITY BYPASSED",
-                path_str
+                "Non-JSON passthrough to {path_str}: SECURITY BYPASSED"
             ));
             println!(
                 "{} Total processed (Passthrough) in {:?}",

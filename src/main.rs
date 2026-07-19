@@ -157,12 +157,12 @@ fn handle_service_command(action: ServiceAction) -> anyhow::Result<()> {
         .parse()
         .map_err(|error| anyhow::anyhow!("invalid native service label: {error}"))?;
     let manager = <dyn ServiceManager>::native()
-        .map_err(|e| anyhow::anyhow!("Failed to detect service manager: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("Failed to detect service manager: {e}"))?;
 
     match action {
         ServiceAction::Install => {
             let exe_path = std::env::current_exe()?;
-            banner::print_step(&format!("Installing service {}...", label));
+            banner::print_step(&format!("Installing service {label}..."));
 
             manager
                 .install(ServiceInstallCtx {
@@ -184,7 +184,7 @@ fn handle_service_command(action: ServiceAction) -> anyhow::Result<()> {
                         }
                     },
                 })
-                .map_err(|e| anyhow::anyhow!("Installation failed: {}", e))?;
+                .map_err(|e| anyhow::anyhow!("Installation failed: {e}"))?;
 
             #[cfg(windows)]
             {
@@ -207,30 +207,30 @@ fn handle_service_command(action: ServiceAction) -> anyhow::Result<()> {
             banner::print_success("Service installed successfully.");
         }
         ServiceAction::Uninstall => {
-            banner::print_step(&format!("Uninstalling service {}...", label));
+            banner::print_step(&format!("Uninstalling service {label}..."));
             manager
                 .uninstall(ServiceUninstallCtx {
                     label: label.clone(),
                 })
-                .map_err(|e| anyhow::anyhow!("Uninstallation failed: {}", e))?;
+                .map_err(|e| anyhow::anyhow!("Uninstallation failed: {e}"))?;
             banner::print_success("Service uninstalled successfully.");
         }
         ServiceAction::Start => {
-            banner::print_step(&format!("Starting service {}...", label));
+            banner::print_step(&format!("Starting service {label}..."));
             manager
                 .start(ServiceStartCtx {
                     label: label.clone(),
                 })
-                .map_err(|e| anyhow::anyhow!("Failed to start service: {}", e))?;
+                .map_err(|e| anyhow::anyhow!("Failed to start service: {e}"))?;
             banner::print_success("Service started.");
         }
         ServiceAction::Stop => {
-            banner::print_step(&format!("Stopping service {}...", label));
+            banner::print_step(&format!("Stopping service {label}..."));
             manager
                 .stop(ServiceStopCtx {
                     label: label.clone(),
                 })
-                .map_err(|e| anyhow::anyhow!("Failed to stop service: {}", e))?;
+                .map_err(|e| anyhow::anyhow!("Failed to stop service: {e}"))?;
             banner::print_success("Service stopped.");
         }
     }
@@ -474,13 +474,11 @@ async fn run_app(
 
             let checker =
                 crate::security::integrity::RuleIntegrityChecker::new(&rules_dir, &key, false)
-                    .map_err(|e| {
-                        anyhow::anyhow!("Failed to initialize integrity checker: {}", e)
-                    })?;
+                    .map_err(|e| anyhow::anyhow!("Failed to initialize integrity checker: {e}"))?;
 
             checker
                 .save_manifest()
-                .map_err(|e| anyhow::anyhow!("Failed to save manifest: {}", e))?;
+                .map_err(|e| anyhow::anyhow!("Failed to save manifest: {e}"))?;
 
             banner::print_success(
                 "Rules signed successfully. Manifest generated (.manifest.json).",
