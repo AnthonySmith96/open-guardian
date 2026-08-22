@@ -91,7 +91,7 @@ jobs:
           $package = "dist/open-guardian"
           New-Item -ItemType Directory -Force "$package/rules", "$package/docs/adr" | Out-Null
           Copy-Item "target/${{ matrix.platform.target }}/release/${{ matrix.platform.binary }}" $package
-          Copy-Item guardian.toml, README.md, CHANGELOG.md LICENSE $package
+          Copy-Item guardian.toml, README.md, CHANGELOG.md, LICENSE $package
           Copy-Item rules/*.toml "$package/rules/"
           Copy-Item docs/adr/*.md "$package/docs/adr/"
           Compress-Archive -Path $package -DestinationPath "dist/${{ matrix.platform.archive }}"
