@@ -1,13 +1,14 @@
 use crate::banner;
-use crate::config::{JudgeConfig, PolicyAction, PolicyConfig, RouteConfig};
+use crate::config::{DlpConfig, RouteConfig, SecurityConfig, VaultConfig};
 use crate::pipeline::{extract_scan_targets, replace_scan_target};
 use crate::proxy::ProxyClient;
 use crate::security::{
-    analyze_injection, check_for_violations, DlpAction, Judge, RedactionSession, ThreatEngine,
+    normalize_for_matching, DlpAction, DlpEngine, PerIpRateLimiter, RedactionSession,
+    DEFAULT_REQUESTS_PER_MINUTE,
 };
 use axum::{
     body::Bytes,
-    extract::{Path, State},
+    extract::{ConnectInfo, Path, State},
     http::{HeaderMap, Method, StatusCode},
     response::{IntoResponse, Response},
     routing::any,
@@ -19,53 +20,45 @@ use colored::Colorize;
 use open_guardian::secrets::KeychainBackend;
 #[cfg(feature = "portable-vault")]
 use open_guardian::secrets::PortableVaultBackend;
-use open_guardian::secrets::{EnvironmentBackend, SecretBroker, SecretRef};
+use open_guardian::secrets::{EnvironmentBackend, SecretBroker};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 pub struct ServerConfig {
     pub bind_address: String,
     pub port: u16,
     pub default_upstream: String,
     pub routes: HashMap<String, RouteConfig>,
-    pub judge_config: JudgeConfig,
     pub audit_log_path: Option<String>,
-    pub block_threshold: Option<u32>,
     pub requests_per_minute: Option<u32>,
     pub timeout_seconds: u64,
     pub verbose: bool,
-    pub policies: PolicyConfig,
-    pub dlp_config: crate::config::DlpConfig,
+    pub dlp_config: DlpConfig,
     /// Optional Semantic Load Balancer config.
     pub load_balancer: Option<crate::config::LoadBalancerConfig>,
     /// Security configuration for hardening options.
-    pub security: Option<crate::config::SecurityConfig>,
-    pub vault: Option<crate::config::VaultConfig>,
+    pub security: Option<SecurityConfig>,
+    pub vault: Option<VaultConfig>,
 }
 
 #[derive(Clone)]
 struct AppState {
     proxy: Arc<ProxyClient>,
-    judge: Arc<Judge>,
-    threat_engine: Arc<ThreatEngine>,
+    dlp_engine: Arc<DlpEngine>,
+    dlp_action: DlpAction,
+    /// `None` disables rate limiting (requests_per_minute = 0).
+    rate_limiter: Option<Arc<PerIpRateLimiter>>,
     default_upstream: String,
     routes: HashMap<String, RouteConfig>,
     audit_log_path: Option<String>,
-    block_threshold: u32,
-    #[allow(clippy::type_complexity)]
-    rate_limiter: Option<Arc<tokio::sync::Mutex<HashMap<String, (u32, std::time::Instant)>>>>,
-    rate_limit_requests_per_minute: u32,
     verbose: bool,
-    // Policy settings
-    default_action: PolicyAction,
-    dlp_action: DlpAction,
-    dlp_config: crate::config::DlpConfig,
     /// Semantic Load Balancer config (None = disabled).
     slb_config: Option<crate::config::LoadBalancerConfig>,
     /// Security config for non-JSON handling and other security policies
-    security_config: crate::config::SecurityConfig,
+    security_config: SecurityConfig,
 }
 
 async fn health_handler() -> impl IntoResponse {
@@ -115,16 +108,19 @@ pub async fn start_server(
         }
     }
     let proxy = ProxyClient::new(config.timeout_seconds, Arc::new(secret_broker))?;
-    let judge = Judge::new(config.judge_config.clone());
 
-    // ── Layer 0: Rule File Integrity Verification ──
-    // Verify HMAC integrity of rule files before starting the server
+    // ── DLP engine: rule files load or the server refuses to start ──
+    let dlp_engine = DlpEngine::build(&config.dlp_config)
+        .map_err(|error| anyhow::anyhow!("DLP engine failed to load: {error}"))?;
+    let dlp_action = DlpAction::from_str(&config.dlp_config.action);
+
+    // ── Rule File Integrity Verification (opt-in via GUARDIAN_HMAC_KEY) ──
     let rules_dir = config
-        .policies
-        .dictionaries
+        .dlp_config
+        .rules_files
         .first()
-        .and_then(|d| {
-            crate::config::resolve_resource_path(&d.path)
+        .and_then(|file| {
+            crate::config::resolve_resource_path(file)
                 .as_path()
                 .parent()
                 .map(|p| p.to_path_buf())
@@ -133,16 +129,16 @@ pub async fn start_server(
 
     let manifest_exists = rules_dir.join(".manifest.json").is_file();
     if let Some(hmac_key) = get_hmac_key()? {
-        let checker = crate::security::integrity::RuleIntegrityChecker::new(
-            &rules_dir, &hmac_key, false, // Emergency kit disabled by default
-        )
-        .map_err(|error| anyhow::anyhow!("failed to initialize rule integrity: {error}"))?;
+        let checker = crate::security::integrity::RuleIntegrityChecker::new(&rules_dir, &hmac_key)
+            .map_err(|error| anyhow::anyhow!("failed to initialize rule integrity: {error}"))?;
         let result = checker.verify();
         if !result.verified {
-            banner::print_error(&format!(
-                "Rule integrity check failed: {:?}",
-                result.failed_files
-            ));
+            for failure in &result.failed_files {
+                banner::print_error(&format!(
+                    "Rule integrity: {} ({})",
+                    failure.path, failure.reason
+                ));
+            }
             return Err(anyhow::anyhow!(
                 "Security: Rule file integrity verification failed"
             ));
@@ -157,28 +153,25 @@ pub async fn start_server(
         );
     }
 
-    let threat_engine = ThreatEngine::new(
-        &config.policies.dictionaries,
-        config.policies.allowed_patterns.clone(),
-    );
-
-    let default_action = PolicyAction::from_str(&config.policies.default_action);
-    let dlp_action = DlpAction::from_str(&config.policies.dlp_action);
+    // ── Per-IP rate limiting ──
+    let requests_per_minute = config
+        .requests_per_minute
+        .unwrap_or(DEFAULT_REQUESTS_PER_MINUTE);
+    let rate_limiter = (requests_per_minute > 0).then(|| {
+        let limiter = Arc::new(PerIpRateLimiter::new(requests_per_minute));
+        limiter.spawn_prune_task(Duration::from_secs(300));
+        limiter
+    });
 
     let state = AppState {
         proxy: Arc::new(proxy),
-        judge: Arc::new(judge),
-        threat_engine: Arc::new(threat_engine),
+        dlp_engine: Arc::new(dlp_engine),
+        dlp_action,
+        rate_limiter,
         default_upstream: config.default_upstream.clone(),
         routes: config.routes,
         audit_log_path: config.audit_log_path.clone(),
-        block_threshold: config.block_threshold.unwrap_or(50),
-        rate_limiter: Some(Arc::new(tokio::sync::Mutex::new(HashMap::new()))),
-        rate_limit_requests_per_minute: config.requests_per_minute.unwrap_or(u32::MAX),
         verbose: config.verbose,
-        default_action,
-        dlp_action,
-        dlp_config: config.dlp_config.clone(),
         slb_config: config.load_balancer,
         security_config: config.security.clone().unwrap_or_default(),
     };
@@ -196,36 +189,28 @@ pub async fn start_server(
         )
     })?;
     let addr = SocketAddr::new(bind_ip, config.port);
-    let model_info = if config.judge_config.ai_judge_enabled.unwrap_or(false) {
-        config
-            .judge_config
-            .ai_judge_model
-            .as_ref()
-            .unwrap_or(&"qwen3:4b".to_string())
-            .clone()
-    } else {
-        "DISABLED".to_string()
-    };
 
     banner::print_startup_info(
         &addr.to_string(),
         &config.default_upstream,
-        &format!("{default_action:?}"),
         &format!("{dlp_action:?}"),
-        &model_info,
+        state.dlp_engine.rule_count(),
     );
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
 
     tracing::info!("Server listening on {}", addr);
 
-    axum::serve(listener, app)
-        .with_graceful_shutdown(async move {
-            shutdown_token.cancelled().await;
-            banner::print_success("Shutdown signal received. Closing server...");
-            tracing::info!("Server shutting down gracefully");
-        })
-        .await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(async move {
+        shutdown_token.cancelled().await;
+        banner::print_success("Shutdown signal received. Closing server...");
+        tracing::info!("Server shutting down gracefully");
+    })
+    .await?;
 
     Ok(())
 }
@@ -265,6 +250,20 @@ fn block_response(category: &str, detail: &str, message: &str) -> Response {
         .into_response()
 }
 
+fn proxy_error_response() -> Response {
+    let error_msg = serde_json::json!({
+        "error": "proxy_internal_error",
+        "message": "Internal proxy failure"
+    });
+    let body = serde_json::to_string(&error_msg).unwrap_or_default() + "\n";
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        [(axum::http::header::CONTENT_TYPE, "application/json")],
+        body,
+    )
+        .into_response()
+}
+
 fn contains_proxy_path_traversal(path: &str) -> bool {
     let lowercase = path.to_ascii_lowercase();
     path.contains('\0')
@@ -277,21 +276,20 @@ fn contains_proxy_path_traversal(path: &str) -> bool {
 }
 
 // ================================================================
-// THE PIPELINE ORCHESTRATOR — Strict 3-Layer Enforcement
+// THE PIPELINE ORCHESTRATOR — egress data protection
 // ================================================================
-// Layer 1: Heuristic Engine (CPU — Fast — Always On)
-//   a. DLP → Redact PII / Block if policy=Block
-//   b. Injection Scanner → Block if score ≥ threshold
-//   c. Threat Engine Signatures → Block if match found
-//
-// Layer 2: Cognitive Engine (GPU — Optional)
-//   RAG context from ThreatEngine → moka cache → Semaphore → LLM
-//
-// Layer 3: Final Execution
-//   Block → 403 | Audit → Log + Header + Forward | Allow → Forward
+// 1.  Transport hygiene: smuggling header check + path traversal
+// 2.  Per-IP rate limit (token bucket)
+// 3.  DLP on every extracted string:
+//       a. raw detection (rules + PII) → block mode rejects here
+//       b. reversible redaction of what can be located in place
+//       c. normalized probe → obfuscated secrets fail closed
+// 4.  Model routing (alias table or SLB) + credential injection
+// 5.  Response-side DLP + local placeholder restoration (proxy.rs)
 // ================================================================
 async fn handler(
     State(state): State<AppState>,
+    ConnectInfo(connect_info): ConnectInfo<SocketAddr>,
     method: Method,
     Path(path): Path<String>,
     headers: HeaderMap,
@@ -305,8 +303,7 @@ async fn handler(
         println!("{} {} {}", "INCOMING:".bright_black(), method, path_str);
     }
 
-    // ── Layer 0: Request Smuggling Prevention ──
-    // Check for HTTP request smuggling attempts before rate limiting
+    // ── Request Smuggling Prevention ──
     let smuggling_config = crate::security::smuggling::SmugglingProtectionConfig::default();
     let header_result = crate::security::smuggling::check_request_headers(
         &headers,
@@ -349,24 +346,24 @@ async fn handler(
         return block_response("Security", "path_traversal", "Invalid request path");
     }
 
-    // ── Rate Limiting ──
+    // ── Per-IP Rate Limiting ──
     if let Some(limiter) = &state.rate_limiter {
-        let mut lock = limiter.lock().await;
-        let now = std::time::Instant::now();
-        let entry = lock.entry("global".to_string()).or_insert((0, now));
-
-        if now.duration_since(entry.1).as_secs() >= 60 {
-            *entry = (1, now);
-        } else if entry.0 >= state.rate_limit_requests_per_minute {
-            banner::print_warning("Global Rate Limit Exceeded");
+        if !limiter.check(connect_info.ip()).await {
+            banner::print_warning(&format!("Rate limit exceeded for {}", connect_info.ip()));
+            log_security_event(
+                state.audit_log_path.clone(),
+                serde_json::json!({
+                    "timestamp": Utc::now().to_rfc3339(),
+                    "event": "rate_limited",
+                    "client_ip": connect_info.ip().to_string()
+                }),
+            );
             return (
                 StatusCode::TOO_MANY_REQUESTS,
                 [(axum::http::header::CONTENT_TYPE, "application/json")],
                 "{\"error\": \"rate_limit_exceeded\"}\n",
             )
                 .into_response();
-        } else {
-            entry.0 += 1;
         }
     }
 
@@ -398,281 +395,115 @@ async fn handler(
             .map(|r| r.url.clone())
             .unwrap_or_else(|| state.default_upstream.clone());
         // The SLB may replace this opaque reference when it changes provider.
-        let mut effective_credential: Option<SecretRef> =
-            route.and_then(|route| route.credential.clone());
+        let mut effective_credential = route.and_then(|route| route.credential.clone());
 
-        let mut risk_level: Option<&str> = None; // For X-Guardian-Risk header in audit mode
-
-        // Accumulates message content for SLB scoring — populated during the scan
-        // loop below (Addendum 2: reuse already-parsed text, never re-read the stream).
+        // Accumulates message content for SLB scoring — populated during the
+        // scan loop below (reuse already-parsed text, never re-read the stream).
         let mut content_for_slb = String::new();
 
         let scan_targets = extract_scan_targets(&json_body);
-        if !scan_targets.is_empty() {
-            for target in scan_targets {
-                let content_text = target.raw.clone();
+        for target in scan_targets {
+            let content_text = target.raw.clone();
 
-                if content_text.is_empty() {
-                    continue;
-                }
+            if content_text.is_empty() {
+                continue;
+            }
 
-                // Accumulate for SLB scoring (safe — already extracted from parsed JSON).
-                content_for_slb.push_str(&content_text);
-                content_for_slb.push(' ');
+            // Accumulate for SLB scoring (safe — already extracted from parsed JSON).
+            content_for_slb.push_str(&content_text);
+            content_for_slb.push(' ');
 
-                // ════════════════════════════════════════════════════
-                // LAYER 1: HEURISTIC ENGINE (CPU — Sub-millisecond)
-                // ════════════════════════════════════════════════════
+            // ════════════════════════════════════════════════════
+            // DLP: raw detection → reversible redaction
+            // ════════════════════════════════════════════════════
+            let dlp_start = std::time::Instant::now();
 
-                // ── Step 1a: DLP (Data Loss Prevention) ──
-                let dlp_start = std::time::Instant::now();
-
-                // Block Check
-                if let Some(violation) =
-                    check_for_violations(&content_text, Some(&state.dlp_config))
-                {
-                    if state.verbose {
-                        println!(
-                            "   {} DLP violation check: {:?}",
-                            "DEBUG:".bright_black(),
-                            dlp_start.elapsed()
-                        );
-                    }
-
-                    if state.dlp_action == DlpAction::Block {
-                        banner::print_warning(&format!(
-                            "DLP BLOCKED: {} in {}",
-                            violation.description, path_str
-                        ));
-                        log_security_event(
-                            state.audit_log_path.clone(),
-                            serde_json::json!({
-                                "timestamp": Utc::now().to_rfc3339(),
-                                "event": "dlp_blocked",
-                                "path": path_str,
-                                "category": violation.category,
-                                "description": violation.description
-                            }),
-                        );
-                        return block_response(
-                            &violation.category,
-                            "dlp_violation",
-                            &format!("Access Denied: {}", violation.description),
-                        );
-                    } else {
-                        tracing::info!("DLP: {} detected, redacting", violation.category);
-                    }
-                }
-
-                // Redaction Process
-                let cleaned = redaction_session.redact(&content_text, Some(&state.dlp_config));
-                if state.verbose {
-                    println!(
-                        "   {} DLP redact check: {:?}",
-                        "DEBUG:".bright_black(),
-                        dlp_start.elapsed()
-                    );
-                }
-
-                if cleaned != content_text {
-                    banner::print_success(&format!(
-                        "Redacted sensitive data in request to {path_str}"
-                    ));
-                    tracing::info!("DLP redaction applied for request to {}", path_str);
-                    log_security_event(
-                        state.audit_log_path.clone(),
-                        serde_json::json!({
-                            "timestamp": Utc::now().to_rfc3339(),
-                            "event": "data_redacted",
-                            "path": path_str
-                        }),
-                    );
-
-                    if !replace_scan_target(&mut json_body, &target, cleaned.clone()) {
-                        tracing::error!(
-                            "SECURITY: failed to apply DLP redaction at {}",
-                            target.json_pointer
-                        );
-                        return block_response(
-                            "security_policy",
-                            "redaction_failed",
-                            "Access Denied: sensitive data could not be safely redacted",
-                        );
-                    }
-                }
-
-                let scan_text = &cleaned;
-
-                // ── Unicode Normalization ──
-                // Normalize Unicode text to prevent homograph attacks and obfuscation
-                let normalized = crate::security::normalize_unicode(scan_text);
-                let scan_text = &normalized.normalized;
-                // Use normalized text for all subsequent checks
-
-                // ── Step 1b: Injection Scanner ──
-                let inj_start = std::time::Instant::now();
-                let security_report = analyze_injection(scan_text);
-                if state.verbose {
-                    println!(
-                        "   {} Injection check: {:?} (score={})",
-                        "DEBUG:".bright_black(),
-                        inj_start.elapsed(),
-                        security_report.score
-                    );
-                }
-
-                if security_report.score >= state.block_threshold {
-                    let category_str = format!("{:?}", security_report.category);
+            if state.dlp_action == DlpAction::Block {
+                if let Some(violation) = state.dlp_engine.check_violations(&content_text) {
                     banner::print_warning(&format!(
-                        "Blocked {:?} attempt in {} (score={})",
-                        security_report.category, path_str, security_report.score
+                        "DLP BLOCKED: {} in {}",
+                        violation.description, path_str
                     ));
-
                     log_security_event(
                         state.audit_log_path.clone(),
                         serde_json::json!({
                             "timestamp": Utc::now().to_rfc3339(),
-                            "event": "injection_blocked",
+                            "event": "dlp_blocked",
                             "path": path_str,
-                            "category": category_str,
-                            "score": security_report.score
+                            "category": violation.category,
+                            "description": violation.description
                         }),
                     );
-
-                    match state.default_action {
-                        PolicyAction::Audit => {
-                            risk_level = Some("High");
-                            tracing::warn!("AUDIT: Injection detected (score={}, category={}) but forwarding per audit policy", security_report.score, category_str);
-                        }
-                        PolicyAction::Allow => {
-                            // Allow policy: log but don't block
-                            tracing::warn!("ALLOW: Injection detected but policy is 'allow'");
-                        }
-                        _ => {
-                            return block_response(
-                                &category_str,
-                                "heuristic_injection_detected",
-                                "Access Denied: Potential Prompt Injection Detected by Heuristic Guard"
-                            );
-                        }
-                    }
-                }
-
-                // ── Step 1c: Threat Engine Scan ──
-                let sig_start = std::time::Instant::now();
-                let scan_result = state.threat_engine.check(scan_text);
-
-                if state.verbose {
-                    println!(
-                        "   {} Threat Scan: {:?} (Blocked: {}, RiskTags: {:?})",
-                        "DEBUG:".bright_black(),
-                        sig_start.elapsed(),
-                        scan_result.blocked,
-                        scan_result.risk_tags
+                    return block_response(
+                        &violation.category,
+                        "dlp_violation",
+                        &format!("Access Denied: {}", violation.description),
                     );
                 }
+            }
 
-                // LAYER 1: HARD SHIELD (Deterministic Block)
-                if scan_result.blocked {
-                    let tags_str = scan_result.risk_tags.join(", ");
-                    banner::print_warning(&format!("BLOCK (Severity 90+): {tags_str}"));
+            let cleaned = redaction_session.redact(&content_text, &state.dlp_engine);
+            if state.verbose {
+                println!(
+                    "   {} DLP scan+redact: {:?}",
+                    "DEBUG:".bright_black(),
+                    dlp_start.elapsed()
+                );
+            }
 
+            if cleaned != content_text {
+                banner::print_success(&format!("Redacted sensitive data in request to {path_str}"));
+                tracing::info!("DLP redaction applied for request to {}", path_str);
+                log_security_event(
+                    state.audit_log_path.clone(),
+                    serde_json::json!({
+                        "timestamp": Utc::now().to_rfc3339(),
+                        "event": "data_redacted",
+                        "path": path_str
+                    }),
+                );
+
+                if !replace_scan_target(&mut json_body, &target, cleaned.clone()) {
+                    tracing::error!(
+                        "SECURITY: failed to apply DLP redaction at {}",
+                        target.json_pointer
+                    );
+                    return block_response(
+                        "security_policy",
+                        "redaction_failed",
+                        "Access Denied: sensitive data could not be safely redacted",
+                    );
+                }
+            }
+
+            // ════════════════════════════════════════════════════
+            // DLP: obfuscation probe — fail closed
+            // ════════════════════════════════════════════════════
+            // A secret that only surfaces after NFKC/casefold/URL/HTML
+            // decoding cannot be located in the original payload, so it
+            // cannot be safely rewritten: reject instead of forwarding.
+            if state.dlp_engine.config().block_on_obfuscated {
+                let normalized = normalize_for_matching(&cleaned);
+                if let Some(violation) = state.dlp_engine.check_violations(&normalized) {
+                    banner::print_warning(&format!(
+                        "DLP BLOCKED (obfuscated): {} in {}",
+                        violation.description, path_str
+                    ));
                     log_security_event(
                         state.audit_log_path.clone(),
                         serde_json::json!({
                             "timestamp": Utc::now().to_rfc3339(),
-                            "event": "threat_blocked",
+                            "event": "dlp_obfuscated_blocked",
                             "path": path_str,
-                            "tags": &scan_result.risk_tags,
-                            "severity": scan_result.max_severity
+                            "category": violation.category,
+                            "description": violation.description
                         }),
                     );
-
-                    match state.default_action {
-                        PolicyAction::Audit => {
-                            risk_level = Some("Critical");
-                            tracing::warn!("AUDIT: Threat blocked but forwarding per audit policy");
-                        }
-                        PolicyAction::Allow => {
-                            tracing::warn!("ALLOW: Threat blocked but policy is 'allow'");
-                        }
-                        _ => {
-                            return block_response(
-                                "CriticalThreat",
-                                "threat_signature_blocked",
-                                &format!("Access Denied: Critical Threat Detected ({tags_str})"),
-                            );
-                        }
-                    }
-                }
-
-                // ════════════════════════════════════════════════════
-                // LAYER 2 & 3: HEURISTIC TAGGING + AI JUDGE
-                // ════════════════════════════════════════════════════
-                // If not blocked, but has risks (Sev 50-89), consult the Judge.
-
-                let has_risks = !scan_result.risk_tags.is_empty();
-                let judge_enabled = state.judge.is_enabled();
-
-                if has_risks && judge_enabled {
-                    let judge_start = std::time::Instant::now();
-
-                    // RAG Retrieval for context (even if not strictly blocked, we want similarity)
-                    let similar_threats = state.threat_engine.find_similar(scan_text, 0.4);
-
-                    let judge_passed = state
-                        .judge
-                        .check_prompt(scan_text, &scan_result.risk_tags, &similar_threats)
-                        .await;
-
-                    if state.verbose {
-                        println!(
-                            "   {} AI Judge check: {:?}",
-                            "DEBUG:".bright_black(),
-                            judge_start.elapsed()
-                        );
-                    }
-
-                    if !judge_passed {
-                        banner::print_error(&format!(
-                            "AI Judge blocked request to {path_str}: Violates Safety Policy"
-                        ));
-                        tracing::error!(
-                            "Semantic policy block by AI Judge for request to {}",
-                            path_str
-                        );
-
-                        log_security_event(
-                            state.audit_log_path.clone(),
-                            serde_json::json!({
-                                "timestamp": Utc::now().to_rfc3339(),
-                                "event": "semantic_blocked",
-                                "path": path_str,
-                                "risk_tags": &scan_result.risk_tags
-                            }),
-                        );
-
-                        match state.default_action {
-                            PolicyAction::Audit => {
-                                risk_level = Some("High");
-                                tracing::warn!(
-                                    "AUDIT: AI Judge flagged request but forwarding per audit policy"
-                                );
-                            }
-                            PolicyAction::Allow => {
-                                tracing::warn!(
-                                    "ALLOW: AI Judge flagged request but policy is 'allow'"
-                                );
-                            }
-                            _ => {
-                                return block_response(
-                                    "SemanticViolation",
-                                    "semantic_violation_detected",
-                                    "Access Denied: Your request was blocked by the AI Governance Engine."
-                                );
-                            }
-                        }
-                    }
+                    return block_response(
+                        &violation.category,
+                        "obfuscated_sensitive_data",
+                        "Access Denied: sensitive data must not be obfuscated to evade redaction",
+                    );
                 }
             }
         }
@@ -680,8 +511,7 @@ async fn handler(
         // ════════════════════════════════════════════════════
         // SEMANTIC LOAD BALANCER (SLB) — Post-Security Routing
         // ════════════════════════════════════════════════════
-        // Runs AFTER security pipeline so DLP + injection checks always fire first.
-        // Uses content already collected from the scan loop — no stream re-read.
+        // Runs AFTER the DLP pipeline so redaction always fires first.
         if let Some(lb) = &state.slb_config {
             if lb.enabled && !content_for_slb.is_empty() {
                 let decision = crate::router::route(&content_for_slb, lb);
@@ -699,7 +529,7 @@ async fn handler(
                     decision.score, tier_label
                 ));
 
-                // Hard Override (Addendum 3): SLB is authoritative.
+                // Hard Override: SLB is authoritative.
                 upstream_url = decision.upstream_url;
 
                 // Credential swap is mandatory when the selected provider changes.
@@ -715,7 +545,7 @@ async fn handler(
         }
 
         // ════════════════════════════════════════════════════
-        // LAYER 3: FINAL EXECUTION
+        // FORWARD
         // ════════════════════════════════════════════════════
         let final_body = match serde_json::to_vec(&json_body) {
             Ok(serialized) => Bytes::from(serialized),
@@ -744,45 +574,16 @@ async fn handler(
                 path: &path_str,
                 headers,
                 body: final_body,
-                dlp_config: Some(&state.dlp_config),
+                dlp_engine: &state.dlp_engine,
                 dlp_action: state.dlp_action,
                 redactions: redaction_session,
             })
             .await
         {
-            Ok(res) => {
-                // DLP is now handled inside the proxy!
-
-                // Inject X-Guardian-Risk header in audit mode
-                if let Some(level) = risk_level {
-                    // We need to clone the response to add headers? No, res is mutable.
-                    // But wait, the proxy returns Response, we are in Ok(mut res).
-                    let mut response = res;
-                    if let Ok(hv) = axum::http::HeaderValue::from_str(level) {
-                        response.headers_mut().insert("x-guardian-risk", hv);
-                    }
-                    tracing::warn!(
-                        "AUDIT MODE: Request forwarded with X-Guardian-Risk: {}",
-                        level
-                    );
-                    response
-                } else {
-                    res
-                }
-            }
+            Ok(res) => res,
             Err(e) => {
                 banner::print_error(&format!("Internal Proxy Error: {e}"));
-                let error_msg = serde_json::json!({
-                    "error": "proxy_internal_error",
-                    "message": "Internal proxy failure"
-                });
-                let body = serde_json::to_string(&error_msg).unwrap_or_default() + "\n";
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    [(axum::http::header::CONTENT_TYPE, "application/json")],
-                    body,
-                )
-                    .into_response()
+                proxy_error_response()
             }
         };
 
@@ -796,13 +597,10 @@ async fn handler(
         response
     } else {
         // ════════════════════════════════════════════════════
-        // SECURITY FIX C1: Non-JSON Request Handling
-        // Default-deny non-JSON to prevent security bypasses.
-        // If allowed via config, still apply raw byte DLP scanning.
+        // Non-JSON Request Handling — default-deny
         // ════════════════════════════════════════════════════
-
+        // If allowed via config, still apply the full raw-text DLP pipeline.
         if !state.security_config.allow_non_json_passthrough {
-            // SECURITY: Default-deny non-JSON requests
             banner::print_blocking(&format!(
                 "Non-JSON request to {path_str}: BLOCKED (security policy)"
             ));
@@ -820,9 +618,10 @@ async fn handler(
         banner::print_warning(&format!(
             "Non-JSON passthrough enabled (SECURITY RISK): {path_str}"
         ));
-        tracing::warn!("SECURITY: Non-JSON passthrough enabled — security checks bypassed!");
+        tracing::warn!(
+            "SECURITY: Non-JSON passthrough enabled — JSON-field redaction does not apply!"
+        );
 
-        // Even in passthrough mode, attempt basic DLP on raw bytes
         let body_str = match std::str::from_utf8(&body) {
             Ok(body) => body,
             Err(_) => {
@@ -833,11 +632,12 @@ async fn handler(
                 );
             }
         };
-        if let Some(violation) = check_for_violations(body_str, Some(&state.dlp_config)) {
-            banner::print_warning(&format!(
-                "DLP violation detected in non-JSON body to {path_str}"
-            ));
-            if state.dlp_action == DlpAction::Block {
+
+        if state.dlp_action == DlpAction::Block {
+            if let Some(violation) = state.dlp_engine.check_violations(body_str) {
+                banner::print_warning(&format!(
+                    "DLP violation detected in non-JSON body to {path_str}"
+                ));
                 return block_response(
                     &violation.category,
                     "dlp_violation",
@@ -847,7 +647,22 @@ async fn handler(
         }
 
         let mut redaction_session = RedactionSession::new();
-        let redacted_body = redaction_session.redact(body_str, Some(&state.dlp_config));
+        let redacted_body = redaction_session.redact(body_str, &state.dlp_engine);
+
+        if state.dlp_engine.config().block_on_obfuscated {
+            let normalized = normalize_for_matching(&redacted_body);
+            if let Some(violation) = state.dlp_engine.check_violations(&normalized) {
+                banner::print_warning(&format!(
+                    "DLP BLOCKED (obfuscated) in non-JSON body to {path_str}: {}",
+                    violation.description
+                ));
+                return block_response(
+                    &violation.category,
+                    "obfuscated_sensitive_data",
+                    "Access Denied: sensitive data must not be obfuscated to evade redaction",
+                );
+            }
+        }
 
         let upstream_url = state.default_upstream.clone();
         let response = match state
@@ -859,7 +674,7 @@ async fn handler(
                 path: &path_str,
                 headers,
                 body: Bytes::from(redacted_body),
-                dlp_config: Some(&state.dlp_config),
+                dlp_engine: &state.dlp_engine,
                 dlp_action: state.dlp_action,
                 redactions: redaction_session,
             })
@@ -868,17 +683,7 @@ async fn handler(
             Ok(res) => res,
             Err(e) => {
                 banner::print_error(&format!("Internal Proxy Error: {e}"));
-                let error_msg = serde_json::json!({
-                    "error": "proxy_internal_error",
-                    "message": "Internal proxy failure"
-                });
-                let body = serde_json::to_string(&error_msg).unwrap_or_default() + "\n";
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    [(axum::http::header::CONTENT_TYPE, "application/json")],
-                    body,
-                )
-                    .into_response()
+                proxy_error_response()
             }
         };
 

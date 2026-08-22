@@ -168,16 +168,3 @@ pub fn sanitize_headers(headers: &mut HeaderMap) {
         }
     }
 }
-
-pub fn smuggling_blocked_response(reason: &str) -> (u16, String) {
-    let body = serde_json::json!({
-        "error": "request_blocked",
-        "reason": "http_request_smuggling_detected",
-        "details": reason,
-        "message": "This request was blocked due to potential HTTP request smuggling"
-    });
-
-    let body_str = serde_json::to_string(&body).unwrap_or_default();
-
-    (400, body_str)
-}

@@ -46,11 +46,30 @@ pub enum TargetKind {
     UnknownString,
 }
 
+/// Keys whose values are protocol structure, not free-form content.
+/// Scanning them adds noise (role names, model ids) without security value.
+const STRUCTURAL_KEYS: &[&str] = &[
+    "role",
+    "type",
+    "model",
+    "name",
+    "stop",
+    "encoding_format",
+    "object",
+    "index",
+    "finish_reason",
+];
+
+/// Minimum length for an unclassified string leaf to be worth scanning.
+const MIN_UNKNOWN_STRING_LEN: usize = 8;
+
 /// Extracts all scannable strings from a JSON request body.
 ///
 /// # Security
 /// This function MUST extract strings from ALL user-controlled fields.
-/// Missing a field means a potential bypass vector.
+/// Missing a field means a potential bypass vector: a secret hidden in
+/// an arbitrary vendor-specific field (`metadata`, `user`, `footer`,
+/// ...) is redacted just like one in `messages[*].content`.
 pub fn extract_scan_targets(body: &Value) -> Vec<ScanTarget> {
     let mut targets = Vec::new();
     let mut queue: VecDeque<(String, &Value)> = VecDeque::new();
@@ -111,11 +130,36 @@ pub fn extract_scan_targets(body: &Value) -> Vec<ScanTarget> {
                     queue.push_back((child_pointer, val));
                 }
             }
+            Value::String(s) => {
+                // SECURITY: unclassified string leaves (metadata, user tags,
+                // vendor extensions, ...) are scanned too — a secret in any
+                // field must not leave the machine unredacted.
+                if s.len() >= MIN_UNKNOWN_STRING_LEN
+                    && !is_structural_pointer(&pointer)
+                    && !targets.iter().any(|t| t.json_pointer == pointer)
+                {
+                    targets.push(ScanTarget {
+                        json_pointer: pointer.clone(),
+                        role: None,
+                        kind: TargetKind::UnknownString,
+                        raw: s.clone(),
+                    });
+                }
+            }
             _ => {}
         }
     }
 
     targets
+}
+
+/// True when the pointer addresses a structural key (`/messages/0/role`)
+/// rather than free-form content.
+fn is_structural_pointer(pointer: &str) -> bool {
+    pointer
+        .rsplit('/')
+        .next()
+        .is_some_and(|key| STRUCTURAL_KEYS.contains(&key))
 }
 
 /// Replaces the JSON string represented by an extracted scan target.
@@ -248,6 +292,46 @@ fn escape_json_pointer(s: &str) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn secrets_hidden_in_arbitrary_fields_are_extracted() {
+        let mut body = json!({
+            "model": "gpt-4o",
+            "messages": [{"role": "user", "content": "deploy please"}],
+            "metadata": {"note": "key gsk_abcdefghijklmnopqrstuvwxyz"}
+        });
+
+        let targets = extract_scan_targets(&body);
+        let secret = targets
+            .iter()
+            .find(|t| t.kind == TargetKind::UnknownString && t.raw.contains("gsk_"))
+            .expect("metadata note must be scanned");
+
+        assert!(replace_scan_target(&mut body, secret, "[REDACTED]".into()));
+        assert_eq!(
+            body.pointer("/metadata/note").and_then(Value::as_str),
+            Some("[REDACTED]")
+        );
+    }
+
+    #[test]
+    fn structural_and_short_strings_are_skipped() {
+        let body = json!({
+            "object": "chat.completion",
+            "model": "gpt-4o",
+            "messages": [
+                {"role": "assistant", "content": "ok"}
+            ]
+        });
+
+        let targets = extract_scan_targets(&body);
+        assert!(
+            !targets
+                .iter()
+                .any(|t| t.raw == "assistant" || t.raw == "gpt-4o" || t.raw == "chat.completion"),
+            "structural values must not produce scan targets"
+        );
+    }
 
     #[test]
     fn test_extract_messages_all_roles() {

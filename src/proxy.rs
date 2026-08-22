@@ -1,8 +1,5 @@
 use crate::banner;
-use crate::config::DlpConfig;
-use crate::security::{
-    check_for_violations, redact_pii, DlpAction, DlpViolation, RedactionSession,
-};
+use crate::security::{DlpAction, DlpEngine, DlpViolation, RedactionSession};
 use anyhow::{Context, Result};
 use axum::response::IntoResponse;
 use futures_util::StreamExt;
@@ -36,18 +33,18 @@ enum ResponseInspectionError {
 
 fn transform_response_string(
     input: &str,
-    dlp_config: Option<&DlpConfig>,
+    dlp_engine: &DlpEngine,
     dlp_action: DlpAction,
     redactions: &RedactionSession,
 ) -> std::result::Result<(String, ResponseMutation), ResponseInspectionError> {
     if dlp_action == DlpAction::Block {
-        if let Some(violation) = check_for_violations(input, dlp_config) {
+        if let Some(violation) = dlp_engine.check_violations(input) {
             return Err(ResponseInspectionError::DlpViolation(violation));
         }
     }
 
     let redacted = if dlp_action == DlpAction::Redact {
-        redact_pii(input, dlp_config)
+        dlp_engine.redact_permanent(input)
     } else {
         input.to_string()
     };
@@ -62,7 +59,7 @@ fn transform_response_string(
 
 fn transform_json_strings(
     value: &mut serde_json::Value,
-    dlp_config: Option<&DlpConfig>,
+    dlp_engine: &DlpEngine,
     dlp_action: DlpAction,
     redactions: &RedactionSession,
 ) -> std::result::Result<ResponseMutation, ResponseInspectionError> {
@@ -71,7 +68,7 @@ fn transform_json_strings(
     match value {
         serde_json::Value::String(text) => {
             let (transformed, string_mutation) =
-                transform_response_string(text, dlp_config, dlp_action, redactions)?;
+                transform_response_string(text, dlp_engine, dlp_action, redactions)?;
             if string_mutation.redacted || string_mutation.restored {
                 *text = transformed;
             }
@@ -80,7 +77,7 @@ fn transform_json_strings(
         serde_json::Value::Array(values) => {
             for value in values {
                 mutation.merge(transform_json_strings(
-                    value, dlp_config, dlp_action, redactions,
+                    value, dlp_engine, dlp_action, redactions,
                 )?);
             }
         }
@@ -88,10 +85,10 @@ fn transform_json_strings(
             let original = std::mem::take(values);
             for (key, mut value) in original {
                 let (key, key_mutation) =
-                    transform_response_string(&key, dlp_config, dlp_action, redactions)?;
+                    transform_response_string(&key, dlp_engine, dlp_action, redactions)?;
                 mutation.merge(key_mutation);
                 mutation.merge(transform_json_strings(
-                    &mut value, dlp_config, dlp_action, redactions,
+                    &mut value, dlp_engine, dlp_action, redactions,
                 )?);
                 if values.insert(key, value).is_some() {
                     return Err(ResponseInspectionError::InvalidJson);
@@ -116,13 +113,13 @@ fn is_json_content_type(content_type: &str) -> bool {
 
 fn inspect_json_response(
     body: &str,
-    dlp_config: Option<&DlpConfig>,
+    dlp_engine: &DlpEngine,
     dlp_action: DlpAction,
     redactions: &RedactionSession,
 ) -> std::result::Result<(String, ResponseMutation), ResponseInspectionError> {
     let mut value = serde_json::from_str::<serde_json::Value>(body)
         .map_err(|_| ResponseInspectionError::InvalidJson)?;
-    let mutation = transform_json_strings(&mut value, dlp_config, dlp_action, redactions)?;
+    let mutation = transform_json_strings(&mut value, dlp_engine, dlp_action, redactions)?;
     if mutation.redacted || mutation.restored {
         let serialized =
             serde_json::to_string(&value).map_err(|_| ResponseInspectionError::InvalidJson)?;
@@ -134,7 +131,7 @@ fn inspect_json_response(
 
 fn inspect_sse_response(
     body: &str,
-    dlp_config: Option<&DlpConfig>,
+    dlp_engine: &DlpEngine,
     dlp_action: DlpAction,
     redactions: &RedactionSession,
 ) -> std::result::Result<(String, ResponseMutation), ResponseInspectionError> {
@@ -168,7 +165,7 @@ fn inspect_sse_response(
         let (transformed, line_mutation) =
             if let Ok(mut value) = serde_json::from_str::<serde_json::Value>(payload) {
                 let line_mutation =
-                    transform_json_strings(&mut value, dlp_config, dlp_action, redactions)?;
+                    transform_json_strings(&mut value, dlp_engine, dlp_action, redactions)?;
                 if line_mutation.redacted || line_mutation.restored {
                     (
                         serde_json::to_string(&value)
@@ -179,7 +176,7 @@ fn inspect_sse_response(
                     (payload.to_string(), line_mutation)
                 }
             } else {
-                transform_response_string(payload, dlp_config, dlp_action, redactions)?
+                transform_response_string(payload, dlp_engine, dlp_action, redactions)?
             };
 
         output.push_str(&line[..prefix_len]);
@@ -194,7 +191,7 @@ fn inspect_sse_response(
 fn inspect_response_text(
     body: &str,
     content_type: &str,
-    dlp_config: Option<&DlpConfig>,
+    dlp_engine: &DlpEngine,
     dlp_action: DlpAction,
     redactions: &RedactionSession,
 ) -> std::result::Result<(String, ResponseMutation), ResponseInspectionError> {
@@ -203,11 +200,11 @@ fn inspect_response_text(
     }
 
     if content_type.contains("text/event-stream") {
-        inspect_sse_response(body, dlp_config, dlp_action, redactions)
+        inspect_sse_response(body, dlp_engine, dlp_action, redactions)
     } else if is_json_content_type(content_type) {
-        inspect_json_response(body, dlp_config, dlp_action, redactions)
+        inspect_json_response(body, dlp_engine, dlp_action, redactions)
     } else {
-        transform_response_string(body, dlp_config, dlp_action, redactions)
+        transform_response_string(body, dlp_engine, dlp_action, redactions)
     }
 }
 
@@ -288,7 +285,7 @@ pub struct ForwardOptions<'a> {
     pub path: &'a str,
     pub headers: HeaderMap,
     pub body: axum::body::Bytes,
-    pub dlp_config: Option<&'a DlpConfig>,
+    pub dlp_engine: &'a DlpEngine,
     pub dlp_action: DlpAction,
     pub redactions: RedactionSession,
 }
@@ -321,13 +318,18 @@ impl ProxyClient {
             credential,
             method,
             path,
-            headers,
+            mut headers,
             body,
-            dlp_config,
+            dlp_engine,
             dlp_action,
             redactions,
         } = opts;
         let url = build_target_url(upstream_url, path)?;
+
+        // Strip transfer-encoding and remaining hop-by-hop headers before
+        // forwarding; the smuggling check already rejected the dangerous
+        // combinations upstream of this point.
+        crate::security::smuggling::sanitize_headers(&mut headers);
 
         let mut request_builder = self.client.request(method, url).body(body);
 
@@ -457,7 +459,7 @@ impl ProxyClient {
         let (body_final, mutation) = match inspect_response_text(
             &body_text,
             &content_type,
-            dlp_config,
+            dlp_engine,
             dlp_action,
             &redactions,
         ) {
@@ -519,7 +521,8 @@ mod tests {
         append_response_chunk, build_bearer_header, build_target_url, inspect_response_text,
         ResponseInspectionError,
     };
-    use crate::security::{DlpAction, RedactionSession};
+    use crate::config::DlpConfig;
+    use crate::security::{DlpAction, DlpEngine, RedactionSession};
     use async_trait::async_trait;
     use axum::{http::StatusCode, routing::any, Router};
     use open_guardian::secrets::{
@@ -538,6 +541,12 @@ mod tests {
         async fn resolve(&self, _reference: &SecretRef) -> Result<SecretValue, SecretError> {
             SecretValue::new("broker-token".to_string())
         }
+    }
+
+    /// Full engine with the real `rules/secrets.toml` (tests run from the
+    /// package root, so the default relative path resolves).
+    fn engine() -> DlpEngine {
+        DlpEngine::build(&DlpConfig::default()).expect("rules load")
     }
 
     #[test]
@@ -572,9 +581,14 @@ mod tests {
         let body = r#"{"created":1784428111,"queue_time":0.172,"seed":1844674407370955,"choices":[{"message":{"content":"GUARDIAN_GROQ_OK"}}]}"#;
         let session = RedactionSession::new();
 
-        let (inspected, mutation) =
-            inspect_response_text(body, "application/json", None, DlpAction::Redact, &session)
-                .expect("valid Groq-style response");
+        let (inspected, mutation) = inspect_response_text(
+            body,
+            "application/json",
+            &engine(),
+            DlpAction::Redact,
+            &session,
+        )
+        .expect("valid Groq-style response");
 
         assert_eq!(inspected, body);
         assert!(!mutation.redacted);
@@ -593,7 +607,7 @@ mod tests {
         let (inspected, mutation) = inspect_response_text(
             body,
             "application/json; charset=utf-8",
-            None,
+            &engine(),
             DlpAction::Redact,
             &session,
         )
@@ -601,7 +615,7 @@ mod tests {
 
         let parsed: serde_json::Value = serde_json::from_str(&inspected).expect("valid JSON");
         assert_eq!(parsed["created"], 1_784_428_111_u64);
-        assert_eq!(parsed["message"], "<KEY>");
+        assert_eq!(parsed["message"], "<GROQ-API-KEY>");
         assert!(mutation.redacted);
     }
 
@@ -610,12 +624,17 @@ mod tests {
         let body = r#"{"gsk_abcdefghijklmnopqrstuvwxyz":"value"}"#;
         let session = RedactionSession::new();
 
-        let (inspected, mutation) =
-            inspect_response_text(body, "application/json", None, DlpAction::Redact, &session)
-                .expect("inspect response");
+        let (inspected, mutation) = inspect_response_text(
+            body,
+            "application/json",
+            &engine(),
+            DlpAction::Redact,
+            &session,
+        )
+        .expect("inspect response");
 
         let parsed: serde_json::Value = serde_json::from_str(&inspected).expect("valid JSON");
-        assert_eq!(parsed["<KEY>"], "value");
+        assert_eq!(parsed["<GROQ-API-KEY>"], "value");
         assert!(mutation.redacted);
     }
 
@@ -623,9 +642,14 @@ mod tests {
     fn empty_json_response_body_is_valid_for_head_and_no_content() {
         let session = RedactionSession::new();
 
-        let (inspected, mutation) =
-            inspect_response_text("", "application/json", None, DlpAction::Redact, &session)
-                .expect("empty body");
+        let (inspected, mutation) = inspect_response_text(
+            "",
+            "application/json",
+            &engine(),
+            DlpAction::Redact,
+            &session,
+        )
+        .expect("empty body");
 
         assert!(inspected.is_empty());
         assert!(!mutation.redacted);
@@ -636,12 +660,17 @@ mod tests {
     fn response_placeholder_restoration_remains_valid_json() {
         let original = r#"api_key="abcdefghijklmnopqrstuvwxyz123456""#;
         let mut session = RedactionSession::new();
-        let placeholder = session.redact(original, None);
+        let placeholder = session.redact(original, &engine());
         let body = serde_json::json!({ "message": placeholder }).to_string();
 
-        let (inspected, mutation) =
-            inspect_response_text(&body, "application/json", None, DlpAction::Redact, &session)
-                .expect("inspect response");
+        let (inspected, mutation) = inspect_response_text(
+            &body,
+            "application/json",
+            &engine(),
+            DlpAction::Redact,
+            &session,
+        )
+        .expect("inspect response");
 
         let parsed: serde_json::Value = serde_json::from_str(&inspected).expect("valid JSON");
         assert_eq!(parsed["message"], original);
@@ -654,9 +683,14 @@ mod tests {
             "data: {\"created\":1784428111,\"delta\":{\"content\":\"ok\"}}\n\ndata: [DONE]\n\n";
         let session = RedactionSession::new();
 
-        let (inspected, mutation) =
-            inspect_response_text(body, "text/event-stream", None, DlpAction::Redact, &session)
-                .expect("inspect SSE");
+        let (inspected, mutation) = inspect_response_text(
+            body,
+            "text/event-stream",
+            &engine(),
+            DlpAction::Redact,
+            &session,
+        )
+        .expect("inspect SSE");
 
         assert_eq!(inspected, body);
         assert!(!mutation.redacted);
@@ -668,7 +702,7 @@ mod tests {
         let result = inspect_response_text(
             "{not-json}",
             "application/problem+json",
-            None,
+            &engine(),
             DlpAction::Redact,
             &session,
         );
@@ -735,7 +769,7 @@ mod tests {
                 path: "/probe",
                 headers: axum::http::HeaderMap::new(),
                 body: axum::body::Bytes::from_static(b"{}"),
-                dlp_config: None,
+                dlp_engine: &DlpEngine::builtin_only(&DlpConfig::default()),
                 dlp_action: crate::security::DlpAction::Redact,
                 redactions: crate::security::RedactionSession::new(),
             })
@@ -763,7 +797,8 @@ mod tests {
         let proxy = super::ProxyClient::new(5, Arc::new(broker)).expect("proxy client");
         let original = "Deploy to 192.168.10.25";
         let mut redactions = crate::security::RedactionSession::new();
-        let protected = redactions.redact(original, None);
+        let protected =
+            redactions.redact(original, &DlpEngine::builtin_only(&DlpConfig::default()));
         assert!(!protected.contains("192.168.10.25"));
 
         let response = proxy
@@ -774,7 +809,7 @@ mod tests {
                 path: "/echo",
                 headers: axum::http::HeaderMap::new(),
                 body: axum::body::Bytes::from(protected),
-                dlp_config: None,
+                dlp_engine: &DlpEngine::builtin_only(&DlpConfig::default()),
                 dlp_action: crate::security::DlpAction::Redact,
                 redactions,
             })
@@ -819,7 +854,7 @@ mod tests {
                 path: "/binary",
                 headers: axum::http::HeaderMap::new(),
                 body: axum::body::Bytes::new(),
-                dlp_config: None,
+                dlp_engine: &DlpEngine::builtin_only(&DlpConfig::default()),
                 dlp_action: crate::security::DlpAction::Redact,
                 redactions: crate::security::RedactionSession::new(),
             })
@@ -852,7 +887,7 @@ mod tests {
                 path: "/private-path",
                 headers: axum::http::HeaderMap::new(),
                 body: axum::body::Bytes::new(),
-                dlp_config: None,
+                dlp_engine: &DlpEngine::builtin_only(&DlpConfig::default()),
                 dlp_action: crate::security::DlpAction::Redact,
                 redactions: crate::security::RedactionSession::new(),
             })

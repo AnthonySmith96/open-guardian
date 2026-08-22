@@ -1,14 +1,14 @@
 [package]
 name = "open-guardian"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 rust-version = "1.88"
 license = "Apache-2.0"
 authors = ["Anthony Smith"]
-description = "The High-Performance Firewall for AI Agents."
+description = "Local egress data-protection proxy for AI agents: secrets and PII never leave your machine."
 repository = "https://github.com/AnthonySmith96/open-guardian"
-keywords = ["ai", "security", "firewall", "llm", "rust"]
-categories = ["network-programming", "science::robotics"]
+keywords = ["ai", "security", "dlp", "llm", "proxy"]
+categories = ["network-programming"]
 
 [features]
 default = ["native-keyring", "portable-vault"]
@@ -26,14 +26,9 @@ regex = "1.10"
 rand = "0.8"
 colored = "2.0"
 anyhow = "1.0"
-moka = { version = "0.12", features = ["future"] }
-seahash = "4.1"
-tower-http = { version = "0.5", features = ["full"] }
 futures-util = "0.3"
 chrono = { version = "0.4", features = ["serde"] }
 dotenvy = "0.15"
-tower = "0.4"
-hyper = "1.0"
 http = "1.0"
 async-trait = "0.1"
 toml = "0.8"
@@ -42,27 +37,23 @@ tracing = "0.1"
 tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tokio-util = "0.7"
-unidecode = "0.3"
 zeroize = "1.9"
 keyring = { version = "=4.1.5", optional = true, default-features = false, features = ["v1"] }
 rpassword = { version = "=7.5.4", optional = true }
 age = { version = "=0.12.1", optional = true, default-features = false }
 
-# Security module dependencies (from Open-GuardIAn)
-# HMAC for rule file integrity
+# Rule file integrity (HMAC manifests)
 hmac-sha256 = "1.1"
 sha2 = "0.10"
 hex = "0.4"
 
-# Unicode normalization
+# Evasion-resistant normalization for DLP detection
 unicode-normalization = "0.1"
-
-# Recursive decoding
 html-escape = "0.2"
 urlencoding = "2.1"
 
-# Unix permissions check
-libc = "0.2"
-
 [target.'cfg(windows)'.dependencies]
 windows-service = "0.7"
+
+[dev-dependencies]
+tokio = { version = "1.0", features = ["test-util", "macros", "rt-multi-thread"] }

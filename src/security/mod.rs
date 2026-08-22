@@ -1,23 +1,17 @@
-pub mod dlp;
-pub mod injection_scanner;
-pub mod judge;
-pub mod normalizer;
-pub mod threat_engine;
+//! Security pipeline for the egress proxy.
+//!
+//! - [`dlp`]: the DLP engine (built-in PII + gitleaks-format secret rules).
+//! - [`normalizer`]: evasion-resistant normalization for detection.
+//! - [`rate_limit`]: per-client-IP token buckets.
+//! - [`smuggling`]: request smuggling header checks.
+//! - [`integrity`]: HMAC manifests for the rule files.
 
-// New Phase 1-2 security modules (designed, not yet fully wired)
-#[allow(dead_code)]
-pub mod env_security;
-#[allow(dead_code)]
+pub mod dlp;
 pub mod integrity;
-#[allow(dead_code)]
-pub mod path_security;
-#[allow(dead_code)]
+pub mod normalizer;
 pub mod rate_limit;
-#[allow(dead_code)]
 pub mod smuggling;
 
-pub use dlp::{check_for_violations, redact_pii, DlpAction, DlpViolation, RedactionSession};
-pub use injection_scanner::analyze_injection;
-pub use judge::Judge;
-pub use normalizer::normalize_unicode;
-pub use threat_engine::ThreatEngine;
+pub use dlp::{DlpAction, DlpEngine, DlpViolation, RedactionSession};
+pub use normalizer::normalize_for_matching;
+pub use rate_limit::{PerIpRateLimiter, DEFAULT_REQUESTS_PER_MINUTE};

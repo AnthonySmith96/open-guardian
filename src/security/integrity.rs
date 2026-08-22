@@ -21,7 +21,6 @@ pub struct RuleManifest {
 pub struct RuleVerificationResult {
     pub verified: bool,
     pub failed_files: Vec<FailedFile>,
-    pub emergency_kit_active: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -33,7 +32,6 @@ pub struct FailedFile {
 #[derive(Debug)]
 pub enum IntegrityError {
     IoError(std::io::Error),
-    HmacError(String),
     ManifestParseError(String),
     FileNotFound(String),
 }
@@ -42,7 +40,6 @@ impl std::fmt::Display for IntegrityError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             IntegrityError::IoError(e) => write!(f, "IO error: {e}"),
-            IntegrityError::HmacError(e) => write!(f, "HMAC error: {e}"),
             IntegrityError::ManifestParseError(e) => write!(f, "Manifest parse error: {e}"),
             IntegrityError::FileNotFound(p) => write!(f, "File not found: {p}"),
         }
@@ -100,12 +97,14 @@ pub fn generate_manifest(rules_dir: &Path, key: &[u8]) -> Result<RuleManifest, I
     for entry in entries.flatten() {
         let path = entry.path();
 
-        if path.extension().map(|e| e == "json").unwrap_or(false)
-            && path
-                .file_name()
-                .map(|n| n != ".manifest.json")
-                .unwrap_or(false)
-        {
+        let is_rule_file = matches!(
+            path.extension().and_then(|e| e.to_str()),
+            Some("json") | Some("toml")
+        ) && path
+            .file_name()
+            .map(|n| n != ".manifest.json")
+            .unwrap_or(false);
+        if is_rule_file {
             let hmac = compute_file_hmac(&path, key)?;
             let relative = path
                 .file_name()
@@ -128,7 +127,6 @@ pub fn verify_all_rules(
     rules_dir: &Path,
     manifest: &RuleManifest,
     key: &[u8],
-    enable_emergency_kit: bool,
 ) -> RuleVerificationResult {
     let mut failed_files = Vec::new();
 
@@ -166,26 +164,18 @@ pub fn verify_all_rules(
     }
 
     let verified = failed_files.is_empty();
-    let emergency_kit_active = !verified && enable_emergency_kit;
-
-    if !verified {
-        tracing::error!(
-            "SEC: Rule file verification FAILED. {} files failed. Emergency kit: {}",
-            failed_files.len(),
-            if emergency_kit_active {
-                "ACTIVATED"
-            } else {
-                "NOT ACTIVATED"
-            }
-        );
-    } else {
+    if verified {
         tracing::info!("SEC: All rule files verified successfully");
+    } else {
+        tracing::error!(
+            "SEC: Rule file verification FAILED. {} files failed.",
+            failed_files.len()
+        );
     }
 
     RuleVerificationResult {
         verified,
         failed_files,
-        emergency_kit_active,
     }
 }
 
@@ -193,15 +183,10 @@ pub struct RuleIntegrityChecker {
     rules_dir: PathBuf,
     key: Vec<u8>,
     manifest: Option<RuleManifest>,
-    emergency_kit_enabled: bool,
 }
 
 impl RuleIntegrityChecker {
-    pub fn new<P: AsRef<Path>>(
-        rules_dir: P,
-        hmac_key: &str,
-        emergency_kit_enabled: bool,
-    ) -> Result<Self, IntegrityError> {
+    pub fn new<P: AsRef<Path>>(rules_dir: P, hmac_key: &str) -> Result<Self, IntegrityError> {
         let rules_dir = rules_dir.as_ref().to_path_buf();
         let key = derive_key(hmac_key);
         let manifest = load_manifest(&rules_dir).ok();
@@ -210,18 +195,12 @@ impl RuleIntegrityChecker {
             rules_dir,
             key,
             manifest,
-            emergency_kit_enabled,
         })
     }
 
     pub fn verify(&self) -> RuleVerificationResult {
         match &self.manifest {
-            Some(manifest) => verify_all_rules(
-                &self.rules_dir,
-                manifest,
-                &self.key,
-                self.emergency_kit_enabled,
-            ),
+            Some(manifest) => verify_all_rules(&self.rules_dir, manifest, &self.key),
             None => {
                 tracing::warn!("SEC: No rule manifest found - cannot verify integrity");
 
@@ -231,7 +210,6 @@ impl RuleIntegrityChecker {
                         path: "*".to_string(),
                         reason: "No manifest file found - rules not verified".to_string(),
                     }],
-                    emergency_kit_active: self.emergency_kit_enabled,
                 }
             }
         }
@@ -252,70 +230,4 @@ fn derive_key(input: &str) -> Vec<u8> {
     let mut hasher = Sha256::new();
     hasher.update(input.as_bytes());
     hasher.finalize().to_vec()
-}
-
-// Emergency Kit - Hardcoded critical patterns
-pub mod emergency_kit {
-    use std::collections::HashSet;
-
-    pub fn critical_injection_patterns() -> HashSet<&'static str> {
-        let mut patterns = HashSet::new();
-        patterns.insert("UNION SELECT");
-        patterns.insert("' OR '1'='1");
-        patterns.insert("'; DROP TABLE");
-        patterns.insert("EXEC(");
-        patterns.insert("xp_cmdshell");
-        patterns.insert("{{");
-        patterns.insert("{%");
-        patterns.insert("${");
-        patterns.insert("T(java.lang.Runtime)");
-        patterns.insert("../");
-        patterns.insert("..\\");
-        patterns.insert("| cat ");
-        patterns.insert("; rm -rf");
-        patterns.insert("&& curl ");
-        patterns.insert("$(whoami)");
-        patterns.insert("`whoami`");
-        patterns.insert("Ignore previous instructions");
-        patterns.insert("DAN mode");
-        patterns.insert("jailbreak");
-        patterns
-    }
-
-    pub fn critical_dlp_patterns() -> HashSet<&'static str> {
-        let mut patterns = HashSet::new();
-        patterns.insert("sk-");
-        patterns.insert("sk-proj-");
-        patterns.insert("gsk_");
-        patterns.insert("AKIA");
-        patterns.insert("xoxb-");
-        patterns.insert("aws_access_key");
-        patterns.insert("aws_secret_key");
-        patterns.insert("api_key=");
-        patterns.insert("password=");
-        patterns.insert("secret=");
-        patterns
-    }
-
-    pub fn check_emergency_kit(content: &str) -> Option<String> {
-        let upper = content.to_uppercase();
-
-        for pattern in critical_injection_patterns() {
-            if upper.contains(&pattern.to_uppercase()) {
-                return Some(format!(
-                    "Emergency Kit: Critical injection pattern '{pattern}'"
-                ));
-            }
-        }
-
-        for pattern in critical_dlp_patterns() {
-            if content.contains(pattern) {
-                return Some(format!(
-                    "Emergency Kit: Critical secret pattern '{pattern}'"
-                ));
-            }
-        }
-
-        None
-    }
 }
