@@ -1,5 +1,6 @@
 mod audit;
 mod banner;
+mod bench;
 mod config;
 mod logger;
 mod pipeline;
@@ -75,6 +76,28 @@ enum Commands {
         /// Directory containing rules
         #[arg(default_value = "rules")]
         rules_dir: String,
+    },
+    /// Run the leak-detection benchmark against the corpus
+    Bench {
+        /// Directory with the corpus case files
+        #[arg(long, default_value = "benchmarks/corpus")]
+        corpus: PathBuf,
+
+        /// Override the rules file (e.g. an upstream gitleaks.toml)
+        #[arg(long)]
+        rules: Option<PathBuf>,
+
+        /// Exit non-zero on any leak or missed detection (CI gate)
+        #[arg(long)]
+        gate: bool,
+
+        /// Write the deterministic benchmark document here
+        #[arg(long)]
+        docs: Option<PathBuf>,
+
+        /// Write detailed JSON results here
+        #[arg(long)]
+        json: Option<PathBuf>,
     },
     /// Service management (Install, Uninstall, Start, Stop)
     Service {
@@ -445,6 +468,22 @@ async fn run_app(
         }
         Commands::Audit { path } => {
             audit::run_audit(&path)?;
+        }
+        Commands::Bench {
+            corpus,
+            rules,
+            gate,
+            docs,
+            json,
+        } => {
+            bench::run(&bench::BenchOptions {
+                corpus_dir: corpus,
+                rules_file: rules,
+                gate,
+                docs_path: docs,
+                json_path: json,
+            })
+            .await?;
         }
         Commands::Sign { rules_dir } => {
             let rules_dir = config::resolve_resource_path(rules_dir);

@@ -76,10 +76,11 @@ fn get_hmac_key() -> anyhow::Result<Option<String>> {
     }
 }
 
-pub async fn start_server(
-    config: ServerConfig,
-    shutdown_token: tokio_util::sync::CancellationToken,
-) -> anyhow::Result<()> {
+/// Builds the fully wired proxy router: secret broker, DLP engine, rule
+/// integrity, rate limiting, and every handler. `start_server` serves it;
+/// the benchmark harness drives the same router in-process so it can never
+/// drift from production behavior.
+pub async fn build_router(config: &ServerConfig) -> anyhow::Result<(Router, usize)> {
     let mut secret_broker = SecretBroker::new();
     secret_broker.register(EnvironmentBackend)?;
     #[cfg(feature = "native-keyring")]
@@ -169,18 +170,28 @@ pub async fn start_server(
         dlp_action,
         rate_limiter,
         default_upstream: config.default_upstream.clone(),
-        routes: config.routes,
+        routes: config.routes.clone(),
         audit_log_path: config.audit_log_path.clone(),
         verbose: config.verbose,
-        slb_config: config.load_balancer,
+        slb_config: config.load_balancer.clone(),
         security_config: config.security.clone().unwrap_or_default(),
     };
 
-    let app = Router::new()
-        .route("/health", any(health_handler))
-        .route("/*path", any(handler))
-        .with_state(state.clone());
+    let rule_count = state.dlp_engine.rule_count();
 
+    Ok((
+        Router::new()
+            .route("/health", any(health_handler))
+            .route("/*path", any(handler))
+            .with_state(state),
+        rule_count,
+    ))
+}
+
+pub async fn start_server(
+    config: ServerConfig,
+    shutdown_token: tokio_util::sync::CancellationToken,
+) -> anyhow::Result<()> {
     let bind_ip = config.bind_address.parse().map_err(|error| {
         anyhow::anyhow!(
             "invalid server.bind_address '{}': {}",
@@ -190,11 +201,13 @@ pub async fn start_server(
     })?;
     let addr = SocketAddr::new(bind_ip, config.port);
 
+    let (app, rule_count) = build_router(&config).await?;
+
     banner::print_startup_info(
         &addr.to_string(),
         &config.default_upstream,
-        &format!("{dlp_action:?}"),
-        state.dlp_engine.rule_count(),
+        &format!("{:?}", DlpAction::from_str(&config.dlp_config.action)),
+        rule_count,
     );
 
     let listener = tokio::net::TcpListener::bind(addr).await?;

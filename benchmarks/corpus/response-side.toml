@@ -1,0 +1,97 @@
+# Response-side corpus: secrets coming BACK from the model. Response DLP
+# must redact them before the client sees the bytes (irreversible `<RULE>`
+# placeholders — the client never authorized this provider to hold the value).
+# The echo case proves the differentiator: placeholders upstream, original
+# value restored to the local client.
+
+[[case]]
+id = "response-json-content-secret"
+category = "response"
+direction = "response"
+expect = "redact"
+secret = "gsk_Qw3Er5Ty7Ui9Op1As3DfGh"
+body = '''{"model":"llama-3.3-70b","messages":[{"role":"user","content":"show me the key you use"}]}'''
+response_body = '''{"id":"cc-1","choices":[{"message":{"role":"assistant","content":"sure, it is gsk_Qw3Er5Ty7Ui9Op1As3DfGh for groq"}}]}'''
+
+[[case]]
+id = "response-object-key-secret"
+category = "response"
+direction = "response"
+expect = "redact"
+secret = "gsk_Qw3Er5Ty7Ui9Op1As3DfGh"
+body = '''{"model":"llama-3.3-70b","messages":[{"role":"user","content":"dump the config"}]}'''
+response_body = '''{"gsk_Qw3Er5Ty7Ui9Op1As3DfGh":"rotation"}'''
+
+[[case]]
+id = "response-sse-json-secret"
+category = "response"
+direction = "response"
+expect = "redact"
+secret = "gsk_Qw3Er5Ty7Ui9Op1As3DfGh"
+response_content_type = "text/event-stream"
+body = '''{"model":"llama-3.3-70b","messages":[{"role":"user","content":"stream the key"}]}'''
+response_body = '''data: {"choices":[{"delta":{"content":"the key is gsk_Qw3Er5Ty7Ui9Op1As3DfGh"}}]}
+
+data: [DONE]
+
+'''
+
+[[case]]
+id = "response-sse-plaintext-secret"
+category = "response"
+direction = "response"
+expect = "redact"
+secret = "gsk_Qw3Er5Ty7Ui9Op1As3DfGh"
+response_content_type = "text/event-stream"
+body = '''{"model":"llama-3.3-70b","messages":[{"role":"user","content":"stream raw"}]}'''
+response_body = '''data: rotation plan uses gsk_Qw3Er5Ty7Ui9Op1As3DfGh next quarter
+
+'''
+
+[[case]]
+id = "response-plain-text-secret"
+category = "response"
+direction = "response"
+expect = "redact"
+secret = "gsk_Qw3Er5Ty7Ui9Op1As3DfGh"
+response_content_type = "text/plain"
+body = '''{"model":"llama-3.3-70b","messages":[{"role":"user","content":"reply raw text"}]}'''
+response_body = '''the working value is gsk_Qw3Er5Ty7Ui9Op1As3DfGh'''
+
+[[case]]
+id = "response-pii-email"
+category = "response"
+direction = "response"
+expect = "redact"
+secret = "ops@ascorpmx.dev"
+body = '''{"model":"llama-3.3-70b","messages":[{"role":"user","content":"who owns the deploy"}]}'''
+response_body = '''{"choices":[{"message":{"content":"the owner is ops@ascorpmx.dev per the runbook"}}]}'''
+
+[[case]]
+id = "response-sse-split-secret"
+category = "response"
+direction = "response"
+expect = "redact"
+known_gap = true
+secret = "gsk_Qw3Er5Ty7"
+note = "SSE events are inspected individually; a key split across events reassembles only in the client."
+response_content_type = "text/event-stream"
+body = '''{"model":"llama-3.3-70b","messages":[{"role":"user","content":"stream the key slowly"}]}'''
+response_body = '''data: {"choices":[{"delta":{"content":"first part gsk_Qw3Er5Ty7"}}]}
+
+data: {"choices":[{"delta":{"content":"then Ui9Op1As3DfGh done"}}]}
+
+data: [DONE]
+
+'''
+
+# The differentiator, end to end: the upstream sees only a placeholder and
+# the local client gets the original value back in the response.
+[[case]]
+id = "request-echo-restoration"
+category = "response"
+direction = "request"
+expect = "restore"
+response_mode = "echo"
+secret = "gsk_Qw3Er5Ty7Ui9Op1As3DfGh"
+body = '''{"model":"llama-3.3-70b","messages":[{"role":"user","content":"echo the value gsk_Qw3Er5Ty7Ui9Op1As3DfGh back"}]}'''

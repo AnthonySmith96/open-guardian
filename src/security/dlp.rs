@@ -64,7 +64,11 @@ struct RawRule {
     id: String,
     #[serde(default)]
     description: Option<String>,
-    regex: String,
+    /// `None` on path-scoped rules (upstream gitleaks.toml has them);
+    /// content detection is impossible without a pattern, so they are
+    /// skipped instead of failing the whole file.
+    #[serde(default)]
+    regex: Option<String>,
     #[serde(rename = "secretGroup")]
     secret_group: Option<usize>,
     #[serde(default)]
@@ -172,8 +176,19 @@ impl DlpEngine {
                     path: resolved.display().to_string(),
                     source,
                 })?;
+            let mut skipped = 0usize;
             for raw in parsed.rules {
-                rules.push(compile_rule(&raw, &resolved.display().to_string())?);
+                let Some(regex) = raw.regex.as_deref() else {
+                    skipped += 1;
+                    continue;
+                };
+                rules.push(compile_rule(&raw, regex, &resolved.display().to_string())?);
+            }
+            if skipped > 0 {
+                tracing::info!(
+                    "DLP: skipped {skipped} path-scoped rule(s) without a regex in {}",
+                    resolved.display()
+                );
             }
         }
         tracing::info!(
@@ -360,12 +375,17 @@ fn banner_warning(message: &str) {
     crate::banner::print_warning(message);
 }
 
-fn compile_rule(raw: &RawRule, path: &str) -> Result<CompiledRule, DlpRuleError> {
-    let regex = Regex::new(&raw.regex).map_err(|source| DlpRuleError::Compile {
-        path: path.to_string(),
-        rule_id: raw.id.clone(),
-        source,
-    })?;
+fn compile_rule(raw: &RawRule, regex: &str, path: &str) -> Result<CompiledRule, DlpRuleError> {
+    // Upstream gitleaks ships a few enormous alternations (generic-api-key)
+    // that exceed the regex crate's default 10 MiB compiled-size budget.
+    let regex = regex::RegexBuilder::new(regex)
+        .size_limit(64 * 1024 * 1024)
+        .build()
+        .map_err(|source| DlpRuleError::Compile {
+            path: path.to_string(),
+            rule_id: raw.id.clone(),
+            source,
+        })?;
     if let Some(group) = raw.secret_group {
         // captures_len includes group 0, so a valid group is < captures_len.
         if group == 0 || group >= regex.captures_len() {
@@ -592,7 +612,10 @@ fn cc_re() -> &'static Regex {
 }
 fn phone_re() -> &'static Regex {
     PHONE_REGEX.get_or_init(|| {
-        Regex::new(r"\b(?:\+?\d{1,3}[-. ]?)?\(?\d{2,4}\)?[-. ]?\d{3,4}[-. ]?\d{3,4}\b").unwrap()
+        // Separator-required shape: bare digit runs are IDs, checksums and
+        // order numbers far more often than phone numbers (benchmark: the
+        // benign corpus must pass unchanged).
+        Regex::new(r"\b(?:\+\d{1,3}[ .-]|(?:\(\d{2,4}\)|\d{2,4})[ .-])\d{3,4}[ .-]\d{4}\b").unwrap()
     })
 }
 fn ipv4_re() -> &'static Regex {
@@ -612,11 +635,12 @@ mod tests {
             &RawRule {
                 id: "TEST-RULE".into(),
                 description: Some("test rule".into()),
-                regex: regex.into(),
+                regex: Some(regex.to_string()),
                 secret_group: None,
                 entropy: None,
                 keywords: None,
             },
+            regex,
             "test",
         )
         .expect("compile test rule")
@@ -675,12 +699,12 @@ mod tests {
         let mut raw = RawRule {
             id: "GEN".into(),
             description: None,
-            regex: r#"(?i)api[_-]?key\s*[:=]\s*["']?([A-Za-z0-9]{16,})["']?"#.into(),
+            regex: Some(r#"(?i)api[_-]?key\s*[:=]\s*["']?([A-Za-z0-9]{16,})["']?"#.into()),
             secret_group: Some(1),
             entropy: Some(3.5),
             keywords: Some(vec!["api_key".into()]),
         };
-        let rule = compile_rule(&raw, "test").expect("compiles");
+        let rule = compile_rule(&raw, raw.regex.as_deref().unwrap(), "test").expect("compiles");
         let engine = DlpEngine::with_rules(&DlpConfig::default(), vec![rule]);
         let mut session = RedactionSession::new();
 
@@ -691,7 +715,7 @@ mod tests {
 
         // High-entropy value: detected and redacted (only the group).
         raw.id = "GEN2".into();
-        let rule2 = compile_rule(&raw, "test").expect("compiles");
+        let rule2 = compile_rule(&raw, raw.regex.as_deref().unwrap(), "test").expect("compiles");
         let engine2 = DlpEngine::with_rules(&DlpConfig::default(), vec![rule2]);
         let mut session2 = RedactionSession::new();
         let redacted = session2.redact("api_key=f7Kq2mZ9xLp4QRt8w2vB", &engine2);
@@ -705,11 +729,12 @@ mod tests {
             &RawRule {
                 id: "KW".into(),
                 description: None,
-                regex: r"[A-Z0-9]{16}".into(),
+                regex: Some(r"[A-Z0-9]{16}".into()),
                 secret_group: None,
                 entropy: None,
                 keywords: Some(vec!["AKIA".into()]),
             },
+            r"[A-Z0-9]{16}",
             "test",
         )
         .expect("compiles");
@@ -789,11 +814,12 @@ regex = '(?P<nested(unclosed'
             &RawRule {
                 id: "GROUPED".into(),
                 description: None,
-                regex: "value: ([a-z]+)".into(),
+                regex: Some("value: ([a-z]+)".into()),
                 secret_group: Some(3),
                 entropy: None,
                 keywords: None,
             },
+            "value: ([a-z]+)",
             "test",
         );
         assert!(result.is_err());

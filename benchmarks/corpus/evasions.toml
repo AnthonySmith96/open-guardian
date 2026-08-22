@@ -1,0 +1,74 @@
+# Evasion corpus: attempts to sneak the same Groq key past detection.
+# Encoded/obfuscated variants must be REJECTED fail-closed (block), because a
+# value that only surfaces after normalization cannot be rewritten in place.
+# The two fragmentation cases are honest known gaps: fragments are reported,
+# never gated.
+
+[[case]]
+id = "evasion-percent-encoded"
+category = "evasion"
+expect = "block"
+secret = "gsk_Qw3%45r5Ty7Ui9Op1As3DfGh"
+body = '''{"model":"llama-3.3-70b","messages":[{"role":"user","content":"inference on gsk_Qw3%45r5Ty7Ui9Op1As3DfGh is cheapest"}]}'''
+
+[[case]]
+id = "evasion-percent-double-encoded"
+category = "evasion"
+expect = "block"
+secret = "gsk_Qw3%2545r5Ty7Ui9Op1As3DfGh"
+body = '''{"model":"llama-3.3-70b","messages":[{"role":"user","content":"inference on gsk_Qw3%2545r5Ty7Ui9Op1As3DfGh is cheapest"}]}'''
+
+[[case]]
+id = "evasion-html-entity"
+category = "evasion"
+expect = "block"
+secret = "gsk_Qw3&#69;r5Ty7Ui9Op1As3DfGh"
+body = '''{"model":"llama-3.3-70b","messages":[{"role":"user","content":"inference on gsk_Qw3&#69;r5Ty7Ui9Op1As3DfGh is cheapest"}]}'''
+
+[[case]]
+id = "evasion-zero-width-chars"
+category = "evasion"
+expect = "block"
+secret = "gsk_Qw3​Er5Ty7Ui9Op1As3DfGh"
+body = "{\"model\":\"llama-3.3-70b\",\"messages\":[{\"role\":\"user\",\"content\":\"inference on gsk_Qw3\u200BEr5Ty7Ui9Op1As3DfGh is cheapest\"}]}"
+
+[[case]]
+id = "evasion-cyrillic-homoglyphs"
+category = "evasion"
+expect = "block"
+secret = "gsk_Qw3Er5Ty7Ui9Оp1Аs3DfGh"
+body = '''{"model":"llama-3.3-70b","messages":[{"role":"user","content":"inference on gsk_Qw3Er5Ty7Ui9Оp1Аs3DfGh is cheapest"}]}'''
+
+[[case]]
+id = "evasion-uppercase"
+category = "evasion"
+expect = "block"
+secret = "GSK_QW3ER5TY7UI9OP1AS3DFGH"
+body = '''{"model":"llama-3.3-70b","messages":[{"role":"user","content":"inference on GSK_QW3ER5TY7UI9OP1AS3DFGH is cheapest"}]}'''
+
+# JSON-level unicode escapes are resolved by the parser BEFORE extraction,
+# so this is NOT an evasion — the plain key must simply be redacted.
+[[case]]
+id = "evasion-json-unicode-escape-resolved"
+category = "evasion"
+expect = "redact"
+secret = "sk-proj-4Wq7mZxKp2RtYb8Vc5Nf3Jh6Ld9sQw"
+body = "{\"model\":\"gpt-4o-mini\",\"input\":\"deploy with \\u0073k-proj-4Wq7mZxKp2RtYb8Vc5Nf3Jh6Ld9sQw today\"}"
+
+[[case]]
+id = "evasion-split-across-fields"
+category = "evasion"
+expect = "redact"
+known_gap = true
+secret = "gsk_Qw3Er5"
+note = "No detector joins key fragments split across different parts of the payload; the model can reassemble them upstream."
+body = '''{"model":"llama-3.3-70b","messages":[{"role":"user","content":"inference on gsk_Qw3Er5 works"},{"role":"assistant","content":"and the rest is Ty7Ui9Op1As3DfGh"}]}'''
+
+[[case]]
+id = "evasion-split-by-newline"
+category = "evasion"
+expect = "redact"
+known_gap = true
+secret = "gsk_Qw3Er5Ty7"
+note = "A newline inside the token breaks every prefix regex; normalization does not join lines."
+body = '''{"model":"llama-3.3-70b","messages":[{"role":"user","content":"inference on gsk_Qw3Er5Ty7\nUi9Op1As3DfGh is cheapest"}]}'''

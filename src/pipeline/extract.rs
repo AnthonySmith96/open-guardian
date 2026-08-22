@@ -48,11 +48,12 @@ pub enum TargetKind {
 
 /// Keys whose values are protocol structure, not free-form content.
 /// Scanning them adds noise (role names, model ids) without security value.
+/// `name` is deliberately NOT skipped: tool/function names are arbitrary
+/// strings, and a secret hidden there must not leave unredacted.
 const STRUCTURAL_KEYS: &[&str] = &[
     "role",
     "type",
     "model",
-    "name",
     "stop",
     "encoding_format",
     "object",
