@@ -33,7 +33,7 @@ use windows_service::{
 
 #[derive(Parser)]
 #[command(name = "open-guardian")]
-#[command(about = "The Shield for the Age of AI Agents", long_about = None)]
+#[command(about = "Local egress data protection for AI agents", long_about = None)]
 #[command(version)]
 struct Cli {
     #[command(subcommand)]
@@ -42,7 +42,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Start the Open-GuardIAn Proxy (The Shield)
+    /// Start the egress protection proxy
     Start {
         /// IP address to listen on (defaults to loopback only)
         #[arg(long)]
@@ -411,25 +411,14 @@ async fn run_app(
 
             let routes = file_config.routes.clone().unwrap_or_default();
 
-            let judge_config = file_config.judge.clone().unwrap_or_default();
             let audit_log_path = file_config
                 .security
                 .as_ref()
                 .and_then(|s| s.audit_log_path.clone());
-            let block_threshold = file_config
-                .security
-                .as_ref()
-                .and_then(|s| s.block_threshold);
             let requests_per_minute = file_config
                 .server
                 .as_ref()
                 .and_then(|s| s.requests_per_minute);
-            let policies = file_config
-                .security
-                .as_ref()
-                .and_then(|s| s.policies.clone())
-                .unwrap_or_default();
-
             let dlp_config = file_config
                 .security
                 .as_ref()
@@ -441,13 +430,10 @@ async fn run_app(
                 port,
                 default_upstream: upstream_url,
                 routes,
-                judge_config,
                 audit_log_path,
-                block_threshold,
                 requests_per_minute,
                 timeout_seconds,
                 verbose,
-                policies,
                 dlp_config,
                 load_balancer: file_config.load_balancer,
                 security: file_config.security.clone(),
@@ -473,7 +459,7 @@ async fn run_app(
             banner::print_step(&format!("Signing rules in {}/...", rules_dir.display()));
 
             let checker =
-                crate::security::integrity::RuleIntegrityChecker::new(&rules_dir, &key, false)
+                crate::security::integrity::RuleIntegrityChecker::new(&rules_dir, &key)
                     .map_err(|e| anyhow::anyhow!("Failed to initialize integrity checker: {e}"))?;
 
             checker

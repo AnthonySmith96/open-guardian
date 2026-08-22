@@ -80,7 +80,7 @@ jobs:
           mkdir -p "$package/rules" "$package/docs/adr"
           cp "target/${{ matrix.platform.target }}/release/${{ matrix.platform.binary }}" "$package/"
           cp guardian.toml README.md CHANGELOG.md LICENSE "$package/"
-          cp rules/*.json "$package/rules/"
+          cp rules/*.toml "$package/rules/"
           cp docs/adr/*.md "$package/docs/adr/"
           tar -C dist -czf "dist/${{ matrix.platform.archive }}" open-guardian
 
@@ -91,8 +91,8 @@ jobs:
           $package = "dist/open-guardian"
           New-Item -ItemType Directory -Force "$package/rules", "$package/docs/adr" | Out-Null
           Copy-Item "target/${{ matrix.platform.target }}/release/${{ matrix.platform.binary }}" $package
-          Copy-Item guardian.toml, README.md, CHANGELOG.md, LICENSE $package
-          Copy-Item rules/*.json "$package/rules/"
+          Copy-Item guardian.toml, README.md, CHANGELOG.md LICENSE $package
+          Copy-Item rules/*.toml "$package/rules/"
           Copy-Item docs/adr/*.md "$package/docs/adr/"
           Compress-Archive -Path $package -DestinationPath "dist/${{ matrix.platform.archive }}"
 

@@ -1,7 +1,7 @@
 # ==========================================
 # OPEN-GUARDIAN CONFIGURATION
 # "Secure by Default, Configurable by Choice."
-# Open-Guardian v0.2.0 local-first profile
+# Open-Guardian v0.3.0 local-first profile
 # ==========================================
 
 [server]
@@ -11,23 +11,33 @@ port = 8080
 # Privacy default: unmatched models remain on the local Ollama-compatible endpoint.
 default_upstream = "http://127.0.0.1:11434/v1"
 
-# RATE LIMITING (Cost & Resource Protection)
-# Maximum global requests per minute
-requests_per_minute = 10000
+# Per-client-IP request budget (token bucket, burstable).
+# Default: 1200/min per IP. 0 disables the limiter.
+requests_per_minute = 1200
 
 [security]
-# FORENSIC AUDITING
 # Path for security event logs (JSONL format)
 audit_log_path = "guardian_audit.jsonl"
-# Sensitivity threshold for blocking heuristic attacks (0-100)
-block_threshold = 50
 
 # ==========================================
-# DLP (Data Loss Prevention) Toggles
-# Per-category switches for PII/Secret redaction.
-# All enabled by default. Set to false to disable.
+# DLP (Data Loss Prevention)
 # ==========================================
 [security.dlp]
+# "redact" -> replace secrets/PII with reversible request-scoped
+#             placeholders and restore them locally in the response
+# "block"  -> reject any request that contains them
+action = "redact"
+
+# Reject content whose sensitive data only appears after decoding
+# (percent-encoding, HTML entities, ...). Such values cannot be
+# safely rewritten in place, so the safe default is to reject.
+block_on_obfuscated = true
+
+# gitleaks-compatible TOML rule files for secret detection.
+# The official gitleaks.toml can be dropped in as a replacement.
+rules_files = ["rules/secrets.toml"]
+
+# Per-category PII toggles (all on by default)
 email_redaction = true
 credit_card_redaction = true
 secret_redaction = true
@@ -36,67 +46,7 @@ ip_redaction = true
 phone_redaction = true
 
 # ==========================================
-# POLICY MANAGER (The Governor)
-# ==========================================
-[security.policies]
-# Default action when a threat is detected: block, audit, redact, allow
-# "block"  -> Return 403, stop the request (traditional firewall profile)
-# "audit"  -> Log WARN + inject X-Guardian-Risk header + forward
-# "redact" -> Deprecated alias for audit; DLP behavior is controlled below
-# "allow"  -> No enforcement (not recommended)
-# Second-brain/control-plane default: classify commands in runbooks without blocking the conversation.
-default_action = "audit"
-
-# DLP behavior: "block" (stop request) or "redact" (replace with <TOKEN> anonymizers)
-dlp_action = "redact"
-
-# Modular threat dictionaries (replaces old threats_path)
-# Add new languages/categories by adding a new [[security.policies.dictionaries]] entry.
-# Set enabled = false to disable a dictionary without deleting it.
-
-# DevOps Mode (Whitelisting): Explicitly allow dangerous patterns
-# These bypass the Threat Engine signature check
-allowed_patterns = ["git pull", "git push", "kubectl get", "kubectl apply"]
-
-[[security.policies.dictionaries]]
-id = "common"
-path = "rules/common.json"
-enabled = true
-
-[[security.policies.dictionaries]]
-id = "jailbreaks_en"
-path = "rules/jailbreaks_en.json"
-enabled = true
-
-[[security.policies.dictionaries]]
-id = "jailbreaks_es"
-path = "rules/jailbreaks_es.json"
-enabled = true
-
-# ==========================================
-# THE SHERIFF (Local AI Governance Judge)
-# Optional compatibility feature. Disabled by default: deterministic controls do not require a second model.
-# Model: Defaults to "qwen2.5:0.5b" but supports ANY model pulled in Ollama (e.g. "llama3", "mistral")
-# ==========================================
-[judge]
-ai_judge_enabled = false
-ai_judge_endpoint = "http://127.0.0.1:11434/api/chat"
-# You can use any model name from `ollama list` here:
-ai_judge_model = "qwen2.5:0.5b"
-
-# PERFORMANCE TUNING
-# Cache TTL: Avoid redundant inference for identical prompts (Seconds)
-judge_cache_ttl_seconds = 60
-
-# Concurrency: Max simultaneous evaluations to protect host resources
-judge_max_concurrency = 4
-
-# RESILIENCE MODE:
-# If the optional judge is enabled, errors fail closed by default.
-fail_open = false
-
-# ==========================================
-# SMART ROUTING & CREDENTIAL INJECTION
+# MODEL ROUTING & CREDENTIAL INJECTION
 # ==========================================
 
 [routes]

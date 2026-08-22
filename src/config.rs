@@ -10,7 +10,6 @@ use std::path::{Path, PathBuf};
 pub struct Config {
     pub server: Option<ServerConfig>,
     pub security: Option<SecurityConfig>,
-    pub judge: Option<JudgeConfig>,
     pub routes: Option<HashMap<String, RouteConfig>>,
     pub load_balancer: Option<LoadBalancerConfig>,
     pub vault: Option<VaultConfig>,
@@ -22,6 +21,7 @@ pub struct ServerConfig {
     pub bind_address: Option<String>,
     pub port: Option<u16>,
     pub default_upstream: Option<String>,
+    /// Per-client-IP request budget per minute. 0 disables the limiter.
     pub requests_per_minute: Option<u32>,
 }
 
@@ -29,8 +29,6 @@ pub struct ServerConfig {
 #[serde(deny_unknown_fields)]
 pub struct SecurityConfig {
     pub audit_log_path: Option<String>,
-    pub block_threshold: Option<u32>,
-    pub policies: Option<PolicyConfig>,
     pub dlp: Option<DlpConfig>,
     /// Whether to allow non-JSON requests to pass through (default: false for security)
     #[serde(default = "SecurityConfig::default_allow_non_json")]
@@ -43,11 +41,24 @@ impl SecurityConfig {
     }
 }
 
-/// Per-category DLP toggle switches.
-/// All default to `true` — disable specific categories as needed.
+/// DLP configuration: enforcement action, rule files, and per-category
+/// toggles. All detectors default to enabled.
 #[derive(Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct DlpConfig {
+    /// "redact" (default) replaces sensitive data with reversible
+    /// request-scoped placeholders; "block" rejects the request.
+    #[serde(default = "DlpConfig::default_action")]
+    pub action: String,
+    /// Block requests whose sensitive data only surfaces after
+    /// normalization/decoding (percent-encoded, HTML entities, ...).
+    /// Such values cannot be safely rewritten in place, so the
+    /// fail-closed default is to reject them.
+    #[serde(default = "DlpConfig::default_block_on_obfuscated")]
+    pub block_on_obfuscated: bool,
+    /// gitleaks-compatible TOML files with secret detection rules.
+    #[serde(default = "DlpConfig::default_rules_files")]
+    pub rules_files: Vec<String>,
     #[serde(default = "DlpConfig::default_true")]
     pub email_redaction: bool,
     #[serde(default = "DlpConfig::default_true")]
@@ -66,11 +77,39 @@ impl DlpConfig {
     fn default_true() -> bool {
         true
     }
+    fn default_action() -> String {
+        "redact".to_string()
+    }
+    fn default_block_on_obfuscated() -> bool {
+        true
+    }
+    fn default_rules_files() -> Vec<String> {
+        vec!["rules/secrets.toml".to_string()]
+    }
+
+    pub fn email_enabled(&self) -> bool {
+        self.email_redaction
+    }
+    pub fn cc_enabled(&self) -> bool {
+        self.credit_card_redaction
+    }
+    pub fn ssn_enabled(&self) -> bool {
+        self.ssn_redaction
+    }
+    pub fn ip_enabled(&self) -> bool {
+        self.ip_redaction
+    }
+    pub fn phone_enabled(&self) -> bool {
+        self.phone_redaction
+    }
 }
 
 impl Default for DlpConfig {
     fn default() -> Self {
         Self {
+            action: Self::default_action(),
+            block_on_obfuscated: Self::default_block_on_obfuscated(),
+            rules_files: Self::default_rules_files(),
             email_redaction: true,
             credit_card_redaction: true,
             secret_redaction: true,
@@ -79,111 +118,6 @@ impl Default for DlpConfig {
             phone_redaction: true,
         }
     }
-}
-
-/// A single dictionary source for threat signatures.
-#[derive(Deserialize, Debug, Clone)]
-#[serde(deny_unknown_fields)]
-pub struct DictionarySource {
-    pub id: String,
-    pub path: String,
-    #[serde(default = "DictionarySource::default_enabled")]
-    pub enabled: bool,
-}
-
-impl DictionarySource {
-    fn default_enabled() -> bool {
-        true
-    }
-}
-
-/// Policy configuration: "Secure by Default, Configurable by Choice."
-#[derive(Deserialize, Debug, Clone)]
-#[serde(deny_unknown_fields)]
-pub struct PolicyConfig {
-    /// Default action when a threat is detected: block, audit, redact, allow
-    #[serde(default = "PolicyConfig::default_action")]
-    pub default_action: String,
-
-    /// DLP action: "block" or "redact"
-    #[serde(default = "PolicyConfig::default_dlp_action")]
-    pub dlp_action: String,
-
-    /// Modular threat dictionaries (replaces old threats_path)
-    #[serde(default = "PolicyConfig::default_dictionaries")]
-    pub dictionaries: Vec<DictionarySource>,
-
-    /// Whitelisted patterns (DevOps Mode) — these bypass the Threat Engine
-    #[serde(default)]
-    pub allowed_patterns: Vec<String>,
-}
-
-impl PolicyConfig {
-    fn default_action() -> String {
-        "audit".to_string()
-    }
-    fn default_dlp_action() -> String {
-        "redact".to_string()
-    }
-    fn default_dictionaries() -> Vec<DictionarySource> {
-        vec![
-            DictionarySource {
-                id: "common".into(),
-                path: "rules/common.json".into(),
-                enabled: true,
-            },
-            DictionarySource {
-                id: "jailbreaks_en".into(),
-                path: "rules/jailbreaks_en.json".into(),
-                enabled: true,
-            },
-            DictionarySource {
-                id: "jailbreaks_es".into(),
-                path: "rules/jailbreaks_es.json".into(),
-                enabled: true,
-            },
-        ]
-    }
-}
-
-impl Default for PolicyConfig {
-    fn default() -> Self {
-        Self {
-            default_action: Self::default_action(),
-            dlp_action: Self::default_dlp_action(),
-            dictionaries: Self::default_dictionaries(),
-            allowed_patterns: Vec::new(),
-        }
-    }
-}
-
-/// Parsed policy action enum used at runtime.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum PolicyAction {
-    Block,
-    Audit,
-    Allow,
-}
-
-impl PolicyAction {
-    pub fn from_str(s: &str) -> Self {
-        match s.to_lowercase().as_str() {
-            "audit" | "redact" => PolicyAction::Audit,
-            "allow" => PolicyAction::Allow,
-            _ => PolicyAction::Block, // secure default
-        }
-    }
-}
-
-#[derive(Deserialize, Debug, Default, Clone)]
-#[serde(deny_unknown_fields)]
-pub struct JudgeConfig {
-    pub ai_judge_enabled: Option<bool>,
-    pub ai_judge_endpoint: Option<String>,
-    pub ai_judge_model: Option<String>,
-    pub judge_cache_ttl_seconds: Option<u64>,
-    pub judge_max_concurrency: Option<usize>,
-    pub fail_open: Option<bool>,
 }
 
 #[derive(Deserialize, Debug, Default, Clone)]
@@ -267,15 +201,15 @@ fn make_resource_paths_absolute(config: &mut Config, config_path: &Path) {
     let Some(base_dir) = config_path.parent() else {
         return;
     };
-    if let Some(policies) = config
+    if let Some(dlp) = config
         .security
         .as_mut()
-        .and_then(|security| security.policies.as_mut())
+        .and_then(|security| security.dlp.as_mut())
     {
-        for dictionary in &mut policies.dictionaries {
-            let path = Path::new(&dictionary.path);
+        for rules_file in &mut dlp.rules_files {
+            let path = Path::new(&rules_file);
             if !path.is_absolute() {
-                dictionary.path = base_dir.join(path).to_string_lossy().into_owned();
+                *rules_file = base_dir.join(path).to_string_lossy().into_owned();
             }
         }
     }
@@ -358,12 +292,17 @@ fn normalize_credentials(config: &mut Config) -> anyhow::Result<()> {
             validate_endpoint(&load_balancer.smart_tier.url, "load_balancer.smart.url")?;
         }
     }
-    if let Some(endpoint) = config
-        .judge
+    if let Some(dlp) = config
+        .security
         .as_ref()
-        .and_then(|judge| judge.ai_judge_endpoint.as_deref())
+        .and_then(|security| security.dlp.as_ref())
     {
-        validate_endpoint(endpoint, "judge.ai_judge_endpoint")?;
+        let action = dlp.action.to_lowercase();
+        if !matches!(action.as_str(), "redact" | "block") {
+            return Err(anyhow::anyhow!(
+                "security.dlp.action must be \"redact\" or \"block\" (got {action:?})"
+            ));
+        }
     }
     Ok(())
 }
@@ -428,13 +367,11 @@ mod tests {
     use super::{make_resource_paths_absolute, normalize_credentials, Config};
 
     #[test]
-    fn dictionary_paths_are_anchored_to_the_config_file() {
+    fn rules_file_paths_are_anchored_to_the_config_file() {
         let mut config: Config = toml::from_str(
             r#"
-            [security.policies]
-            [[security.policies.dictionaries]]
-            id = "test"
-            path = "rules/test.json"
+            [security.dlp]
+            rules_files = ["rules/secrets.toml"]
             "#,
         )
         .expect("valid test config");
@@ -443,15 +380,10 @@ mod tests {
 
         make_resource_paths_absolute(&mut config, &config_path);
 
-        let dictionary = &config
-            .security
-            .expect("security")
-            .policies
-            .expect("policies")
-            .dictionaries[0];
+        let dlp = config.security.expect("security").dlp.expect("dlp");
         assert_eq!(
-            std::path::Path::new(&dictionary.path),
-            base.join("rules/test.json")
+            std::path::Path::new(&dlp.rules_files[0]),
+            base.join("rules/secrets.toml")
         );
     }
 
@@ -525,9 +457,17 @@ mod tests {
             [routes]
             model = { url = "https://example.invalid/v1", api_key = "literal-secret" }
         "#;
+        let removed_judge_section = r#"
+            [judge]
+            ai_judge_enabled = false
+        "#;
 
         assert!(toml::from_str::<Config>(unknown_top_level).is_err());
         assert!(toml::from_str::<Config>(literal_route_key).is_err());
+        assert!(
+            toml::from_str::<Config>(removed_judge_section).is_err(),
+            "v0.2 [judge] config must fail fast after the pivot, not linger silently"
+        );
     }
 
     #[test]
@@ -552,20 +492,30 @@ mod tests {
     }
 
     #[test]
-    fn default_policy_observes_without_blocking_runbook_text() {
-        assert_eq!(super::PolicyConfig::default().default_action, "audit");
-        assert_eq!(
-            super::PolicyAction::from_str("invalid-policy"),
-            super::PolicyAction::Block
-        );
-        assert_eq!(
-            super::PolicyAction::from_str("redact"),
-            super::PolicyAction::Audit
-        );
+    fn invalid_dlp_action_is_rejected() {
+        let mut config: Config = toml::from_str(
+            r#"
+            [security.dlp]
+            action = "warn"
+            "#,
+        )
+        .expect("valid TOML");
+
+        assert!(normalize_credentials(&mut config).is_err());
     }
 
     #[test]
-    fn distributed_profile_stays_local_and_keeps_all_rule_sets_enabled() {
+    fn default_dlp_config_redacts_and_blocks_obfuscated_secrets() {
+        let config = super::DlpConfig::default();
+
+        assert_eq!(config.action, "redact");
+        assert!(config.block_on_obfuscated);
+        assert_eq!(config.rules_files, vec!["rules/secrets.toml".to_string()]);
+        assert!(config.secret_redaction);
+    }
+
+    #[test]
+    fn distributed_profile_stays_local() {
         let config: Config = toml::from_str(include_str!("../guardian.toml"))
             .expect("distributed guardian.toml must parse");
 
@@ -577,13 +527,9 @@ mod tests {
             Some("http://127.0.0.1:11434/v1")
         );
         assert!(!config.load_balancer.expect("load balancer").enabled);
-        assert!(config
-            .security
-            .expect("security")
-            .policies
-            .expect("policies")
-            .dictionaries
-            .iter()
-            .all(|dictionary| dictionary.enabled));
+        assert_eq!(
+            config.security.expect("security").dlp.expect("dlp").action,
+            "redact"
+        );
     }
 }

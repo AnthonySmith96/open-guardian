@@ -15,7 +15,7 @@ pub fn print_banner() {
     println!("{}", banner.bright_cyan().bold());
     println!(
         "   {}",
-        "Stopping Smart Agents from doing stupid things."
+        "Local egress protection for AI agents."
             .bright_white()
             .italic()
     );
@@ -34,7 +34,7 @@ pub fn print_banner() {
     );
 }
 
-pub fn print_startup_info(addr: &str, upstream: &str, action: &str, dlp: &str, model: &str) {
+pub fn print_startup_info(addr: &str, upstream: &str, dlp: &str, rules: usize) {
     let corner_tl = "┌".bright_black();
     let corner_tr = "┐".bright_black();
     let corner_bl = "└".bright_black();
@@ -49,7 +49,7 @@ pub fn print_startup_info(addr: &str, upstream: &str, action: &str, dlp: &str, m
         "{}  {: <18}  {}",
         side,
         "🛡️  STATUS:".bright_green().bold(),
-        format!("SHIELD ACTIVE (v{})", env!("CARGO_PKG_VERSION"))
+        format!("EGRESS GUARD (v{})", env!("CARGO_PKG_VERSION"))
             .on_green()
             .black()
             .bold()
@@ -69,20 +69,14 @@ pub fn print_startup_info(addr: &str, upstream: &str, action: &str, dlp: &str, m
     println!(
         "{}  {: <18}  {}",
         side,
-        "⚖️  CORE POLICY:".bright_white(),
-        action.to_uppercase().bright_yellow()
-    );
-    println!(
-        "{}  {: <18}  {}",
-        side,
         "🔍 DLP ACTION:".bright_white(),
         dlp.to_uppercase().bright_yellow()
     );
     println!(
         "{}  {: <18}  {}",
         side,
-        "🤖 AI JUDGE:".bright_white(),
-        model.bright_magenta()
+        "📜 SECRET RULES:".bright_white(),
+        format!("{rules} loaded").bright_cyan()
     );
     println!("{corner_bl}{line}{corner_br}");
     println!();

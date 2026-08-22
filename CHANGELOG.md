@@ -1,5 +1,69 @@
 # Changelog
 
+## v0.3.0 - The egress pivot: DLP engine, rule files, per-IP limits (2026-08-22)
+
+### Direction change
+
+Open-Guardian is now a **local egress data-protection proxy for AI agents**.
+The prompt-injection defense stack (keyword scanner, threat signature engine,
+optional Ollama AI Judge) was removed: keyword/substring detection was
+trivially bypassed, could not run case-insensitively on the wired path, and a
+network proxy cannot distinguish untrusted retrieved content from user
+instructions. Prompt-injection defense belongs in the agent runtime. The
+project's defensible core — reversible redaction, the SecretBroker, and the
+egress boundary — is now the entire product.
+
+### Removed
+
+- `injection_scanner`, `threat_engine`, `judge` modules and the jailbreak
+  rule dictionaries (`rules/common.json`, `rules/jailbreaks_en.json`,
+  `rules/jailbreaks_es.json`).
+- `[judge]`, `[security.policies]` (dictionaries, `allowed_patterns`,
+  `default_action`), and `security.block_threshold` configuration; stale
+  v0.2 config now fails fast with a parse error instead of lingering.
+- Dead `env_security`/`path_security` prototypes and the broken
+  `tools/gen_manifest` scripts (the `open-guardian sign` subcommand is the
+  supported manifest path).
+- Unused dependencies: `moka`, `seahash`, `tower`, `tower-http`, `hyper`,
+  `unidecode`, `libc`.
+
+### New
+
+- `DlpEngine`: external secret rules in **gitleaks-compatible TOML**
+  (`rules/secrets.toml`, 27 curated rules) with `keywords` prefilters,
+  Shannon `entropy` gates, and `secretGroup`-scoped redaction. The upstream
+  gitleaks.toml works as a drop-in replacement. Invalid rules abort startup.
+- Credit card detection now requires a **Luhn checksum**, eliminating the
+  most common false positive class.
+- **Obfuscated-secret rejection**: requests are re-scanned after NFKC +
+  casefold + homoglyph folding + recursive URL/HTML decoding; secrets that
+  only surface decoded (e.g. percent-encoded keys) are rejected fail-closed
+  because they cannot be safely rewritten in place.
+  (`security.dlp.block_on_obfuscated`, default true.)
+- **Arbitrary-field scanning**: unclassified JSON string leaves
+  (`metadata.note`, vendor extensions, ...) are now scanned and redacted —
+  previously only known fields were covered.
+- **Per-client-IP token-bucket rate limiting** replaces the single global
+  counter; keyed on socket peer address only (forwarded headers cannot spoof
+  limiter identity), with idle-bucket pruning. `server.requests_per_minute`
+  is now per-IP (default 1200; 0 disables).
+- Hop-by-hop header stripping (`sanitize_headers`) is now wired into the
+  upstream forward path.
+- Rule integrity manifests now cover `.toml` rule files as well as `.json`.
+
+### Changed
+
+- `dlp_action` moved to `security.dlp.action`; response-side one-way
+  placeholders now use rule IDs (`<GROQ-API-KEY>`) instead of `<KEY>`.
+- Startup banner reports the loaded secret-rule count instead of judge state.
+
+### Compatibility notes
+
+- v0.2 configuration files with `[judge]` or `[security.policies]` sections
+  must be updated; unknown fields are rejected by design.
+- `X-Guardian-Risk` audit headers no longer exist (they tagged injection
+  findings, which were removed).
+
 ## v0.2.0 - Local-first hardening and SecretBroker (2026-07-18)
 
 ### Security fixes
