@@ -60,6 +60,45 @@ jobs:
       - name: Verify headless build
         run: cargo check --all-targets --no-default-features --locked
 
+      - name: Benchmark regression gate
+        run: cargo run --locked --quiet -- bench --gate
+
+      - name: Benchmark document freshness
+        run: |
+          cargo run --locked --quiet -- bench --docs target/BENCHMARK.fresh.md
+          diff -u docs/BENCHMARK.md target/BENCHMARK.fresh.md
+
+  gitleaks-compat:
+    name: Upstream gitleaks.toml drop-in check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install minimum supported Rust
+        uses: dtolnay/rust-toolchain@39b0b3842c7e8bbf6904c0bfc3d9006fdd4dc4e0 # 1.88.0
+
+      - name: Cache Cargo data
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+
+      # Drop-in compatibility means: the official file loads, compiles, and
+      # the pipeline runs. Detection rates are reported in the uploaded
+      # artifact, not gated — our curated ruleset exists precisely because
+      # upstream file-scanning rules underperform on proxy traffic.
+      - name: Fetch pinned upstream gitleaks.toml
+        run: |
+          curl -fsSL -o gitleaks.toml https://raw.githubusercontent.com/gitleaks/gitleaks/b58d3f102cf3a2c84cb7f923d05c25c9b1aed84b/config/gitleaks.toml
+          sha256sum gitleaks.toml
+
+      - name: Run benchmark with upstream rules
+        run: cargo run --locked --quiet -- bench --rules gitleaks.toml --json target/gitleaks-report.json
+
+      - name: Upload compatibility report
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: gitleaks-compat-report
+          path: target/gitleaks-report.json
+
   compatibility:
     name: Test ${{ matrix.os }}
     runs-on: ${{ matrix.os }}

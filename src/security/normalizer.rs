@@ -47,12 +47,17 @@ const MAX_DECODE_DEPTH: usize = 5;
 const MAX_DECODE_BYTES: usize = 1024 * 1024;
 
 /// Returns the canonical matching form of `content`:
-/// NFKC → zero-width strip → homoglyph fold → casefold →
+/// NFKC → zero-width strip → casefold → homoglyph fold →
 /// recursive URL/HTML entity decoding.
 pub fn normalize_for_matching(content: &str) -> String {
     use unicode_normalization::UnicodeNormalization;
 
     let normalized: String = content.nfkc().collect();
+
+    // Casefold BEFORE the homoglyph fold: folding maps lowercase forms
+    // (Cyrillic U+0430.., Greek, fullwidth), so an uppercase homoglyph
+    // like О (U+041E) must reach its lowercase form first.
+    let normalized: String = normalized.to_lowercase();
 
     let mut result = String::with_capacity(normalized.len());
     for c in normalized.chars() {
@@ -64,7 +69,6 @@ pub fn normalize_for_matching(content: &str) -> String {
             None => result.push(c),
         }
     }
-    let result = result.to_lowercase();
 
     if result.len() <= MAX_DECODE_BYTES {
         decode_recursive(&result, 0)

@@ -1,0 +1,109 @@
+# Placement corpus: the same OpenAI key hidden in every field an agent
+# request can carry. The extractor must cover all of them — a miss in any
+# field is an exfiltration channel.
+
+[[case]]
+id = "place-user-content"
+category = "placement"
+expect = "redact"
+secret = "sk-proj-4Wq7mZxKp2RtYb8Vc5Nf3Jh6Ld9sQw"
+body = '''{"model":"gpt-4o-mini","messages":[{"role":"user","content":"deploy with sk-proj-4Wq7mZxKp2RtYb8Vc5Nf3Jh6Ld9sQw today"}]}'''
+
+[[case]]
+id = "place-system-content"
+category = "placement"
+expect = "redact"
+secret = "sk-proj-4Wq7mZxKp2RtYb8Vc5Nf3Jh6Ld9sQw"
+body = '''{"model":"gpt-4o-mini","messages":[{"role":"system","content":"policy note sk-proj-4Wq7mZxKp2RtYb8Vc5Nf3Jh6Ld9sQw applies"}]}'''
+
+[[case]]
+id = "place-assistant-content"
+category = "placement"
+expect = "redact"
+secret = "sk-proj-4Wq7mZxKp2RtYb8Vc5Nf3Jh6Ld9sQw"
+body = '''{"model":"gpt-4o-mini","messages":[{"role":"assistant","content":"earlier I used sk-proj-4Wq7mZxKp2RtYb8Vc5Nf3Jh6Ld9sQw for this"}]}'''
+
+[[case]]
+id = "place-tool-content"
+category = "placement"
+expect = "redact"
+secret = "sk-proj-4Wq7mZxKp2RtYb8Vc5Nf3Jh6Ld9sQw"
+body = '''{"model":"gpt-4o-mini","messages":[{"role":"tool","content":"shell output: using sk-proj-4Wq7mZxKp2RtYb8Vc5Nf3Jh6Ld9sQw"}]}'''
+
+[[case]]
+id = "place-content-parts"
+category = "placement"
+expect = "redact"
+secret = "sk-proj-4Wq7mZxKp2RtYb8Vc5Nf3Jh6Ld9sQw"
+body = '''{"model":"gpt-4o-mini","messages":[{"role":"user","content":[{"type":"text","text":"see sk-proj-4Wq7mZxKp2RtYb8Vc5Nf3Jh6Ld9sQw in attached notes"}]}]}'''
+
+[[case]]
+id = "place-prompt-completions"
+category = "placement"
+expect = "redact"
+secret = "sk-proj-4Wq7mZxKp2RtYb8Vc5Nf3Jh6Ld9sQw"
+path = "/v1/completions"
+body = '''{"model":"gpt-3.5-turbo-instruct","prompt":"continue: the deploy used sk-proj-4Wq7mZxKp2RtYb8Vc5Nf3Jh6Ld9sQw"}'''
+
+[[case]]
+id = "place-input-embeddings-string"
+category = "placement"
+expect = "redact"
+secret = "sk-proj-4Wq7mZxKp2RtYb8Vc5Nf3Jh6Ld9sQw"
+path = "/v1/embeddings"
+body = '''{"model":"text-embedding-3-small","input":"embed this audit line sk-proj-4Wq7mZxKp2RtYb8Vc5Nf3Jh6Ld9sQw"}'''
+
+[[case]]
+id = "place-input-embeddings-array"
+category = "placement"
+expect = "redact"
+secret = "sk-proj-4Wq7mZxKp2RtYb8Vc5Nf3Jh6Ld9sQw"
+path = "/v1/embeddings"
+body = '''{"model":"text-embedding-3-small","input":["embed this audit line sk-proj-4Wq7mZxKp2RtYb8Vc5Nf3Jh6Ld9sQw","plain second element"]}'''
+
+[[case]]
+id = "place-instructions"
+category = "placement"
+expect = "redact"
+secret = "sk-proj-4Wq7mZxKp2RtYb8Vc5Nf3Jh6Ld9sQw"
+body = '''{"model":"gpt-4o-mini","instructions":"context sk-proj-4Wq7mZxKp2RtYb8Vc5Nf3Jh6Ld9sQw for the task"}'''
+
+[[case]]
+id = "place-tool-call-arguments"
+category = "placement"
+expect = "redact"
+secret = "sk-proj-4Wq7mZxKp2RtYb8Vc5Nf3Jh6Ld9sQw"
+body = '''{"model":"gpt-4o-mini","messages":[{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"deploy","arguments":"{\"provider\":\"openai\",\"credential\":\"sk-proj-4Wq7mZxKp2RtYb8Vc5Nf3Jh6Ld9sQw\"}"}}]}]}'''
+
+[[case]]
+id = "place-metadata-note"
+category = "placement"
+expect = "redact"
+secret = "sk-proj-4Wq7mZxKp2RtYb8Vc5Nf3Jh6Ld9sQw"
+body = '''{"model":"gpt-4o-mini","messages":[{"role":"user","content":"deploy now"}],"metadata":{"note":"rotation sk-proj-4Wq7mZxKp2RtYb8Vc5Nf3Jh6Ld9sQw pending"}}'''
+
+[[case]]
+id = "place-deep-nesting"
+category = "placement"
+expect = "redact"
+secret = "sk-proj-4Wq7mZxKp2RtYb8Vc5Nf3Jh6Ld9sQw"
+body = '''{"model":"gpt-4o-mini","wrapper":{"audit":{"entries":[{"ts":"2026-08-22T00:00:00Z","note":"deploy used sk-proj-4Wq7mZxKp2RtYb8Vc5Nf3Jh6Ld9sQw here"}]}}}'''
+
+# `name` is an arbitrary free-form field, not protocol structure: a key
+# hidden there must be redacted like anywhere else.
+[[case]]
+id = "place-name-field"
+category = "placement"
+expect = "redact"
+secret = "sk-proj-4Wq7mZxKp2RtYb8Vc5Nf3Jh6Ld9sQw"
+body = '''{"model":"gpt-4o-mini","name":"release sk-proj-4Wq7mZxKp2RtYb8Vc5Nf3Jh6Ld9sQw rotation"}'''
+
+# Non-JSON bodies are rejected by the default-deny policy before any
+# forwarding happens: no uninspectable bytes may leave the machine.
+[[case]]
+id = "policy-non-json-body"
+category = "policy"
+expect = "block"
+secret = "sk-proj-4Wq7mZxKp2RtYb8Vc5Nf3Jh6Ld9sQw"
+content_type = "text/plain"
+body = '''deploy with sk-proj-4Wq7mZxKp2RtYb8Vc5Nf3Jh6Ld9sQw today'''

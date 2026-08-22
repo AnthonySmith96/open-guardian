@@ -1,0 +1,70 @@
+# Benign corpus: look-alike traffic that must pass through semantically
+# unchanged. Any redaction or block here is a false positive. Deliberately
+# contains no PII (emails/cards/phones/IPs are intentionally redacted by
+# policy — that is not a false positive).
+
+[[case]]
+id = "benign-uuid"
+category = "benign"
+expect = "allow"
+body = '''{"model":"gpt-4o-mini","messages":[{"role":"user","content":"trace id 550e8400-e29b-41d4-a716-446655440000 for the request"}]}'''
+
+[[case]]
+id = "benign-sha256"
+category = "benign"
+expect = "allow"
+body = '''{"model":"gpt-4o-mini","messages":[{"role":"user","content":"checksum e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 matches"}]}'''
+
+[[case]]
+id = "benign-request-id"
+category = "benign"
+expect = "allow"
+body = '''{"model":"gpt-4o-mini","messages":[{"role":"user","content":"upstream x-request-id f4a1b2c3d4e5f60718293a4b5c6d7e8f"}]}'''
+
+[[case]]
+id = "benign-semver"
+category = "benign"
+expect = "allow"
+body = '''{"model":"gpt-4o-mini","messages":[{"role":"user","content":"shipping open-guardian v0.4.0+build.20260822 today"}]}'''
+
+[[case]]
+id = "benign-model-tag"
+category = "benign"
+expect = "allow"
+body = '''{"model":"gpt-4o-mini","messages":[{"role":"user","content":"compare against qwen3:8b-instruct and pick one"}]}'''
+
+[[case]]
+id = "benign-url-with-query"
+category = "benign"
+expect = "allow"
+body = '''{"model":"gpt-4o-mini","messages":[{"role":"user","content":"fetch https://api.example.com/v1/orders?cursor=eyJwYWdlIjoyfQ&page=2"}]}'''
+
+[[case]]
+id = "benign-data-url"
+category = "benign"
+expect = "allow"
+body = '''{"model":"gpt-4o-mini","messages":[{"role":"user","content":[{"type":"text","text":"logo for the report"},{"type":"image_url","image_url":{"url":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9aw=="}}]}]}'''
+
+[[case]]
+id = "benign-order-number"
+category = "benign"
+expect = "allow"
+body = '''{"model":"gpt-4o-mini","messages":[{"role":"user","content":"invoice ORD-2026-000123 was paid"}]}'''
+
+[[case]]
+id = "benign-timestamp"
+category = "benign"
+expect = "allow"
+body = '''{"model":"gpt-4o-mini","messages":[{"role":"user","content":"snapshot taken at 2026-08-22T14:32:07Z"}]}'''
+
+[[case]]
+id = "benign-db-url-no-credentials"
+category = "benign"
+expect = "allow"
+body = '''{"model":"gpt-4o-mini","messages":[{"role":"user","content":"connect string postgresql://db.internal.prod:5432/app uses IAM auth"}]}'''
+
+[[case]]
+id = "benign-graphql"
+category = "benign"
+expect = "allow"
+body = '''{"model":"gpt-4o-mini","messages":[{"role":"user","content":"rewrite query { user(id: 42) { name } } for relay"}]}'''
