@@ -1,0 +1,55 @@
+# Example Action Broker policy (v0.5).
+#
+# 1. Edit the actions to match your machine (absolute paths, exact argv).
+# 2. open-guardian policy keygen --key broker/policy.key
+# 3. open-guardian policy sign --policy broker/policy.toml --key broker/policy.key
+# 4. Pin the key in guardian.toml:
+#        [broker]
+#        policy = "broker/policy.toml"
+#        public_key = "broker/policy.pub"
+#
+# The daemon refuses to start if the signature does not verify, so treat every
+# edit as "edit → re-sign → restart broker".
+
+version = 1
+
+# ── Unprivileged action: runs as the daemon's own user ──────────────────────
+
+[[action]]
+id = "disk-usage"
+description = "Check disk usage"
+exec = ["/bin/df", "-h", "/"]
+timeout_secs = 5
+
+# ── Elevated action: exact sudoers rule + sudo -n -u root ───────────────────
+
+[[action]]
+id = "restart-nginx"
+description = "Restart the nginx service"
+exec = ["/usr/bin/systemctl", "restart", "nginx"]
+user = "root"
+timeout_secs = 30
+
+# ── Secret-bearing action: credential resolved at exec time only ────────────
+# The agent requests the deploy; DEPLOY_TOKEN never appears in any prompt,
+# response, or log — only inside the child process environment.
+
+[[action]]
+id = "deploy-site"
+description = "Run the site deploy script (uses the pinned deploy token)"
+exec = ["/usr/local/bin/deploy-site"]
+timeout_secs = 300
+
+[[action.env]]
+name = "DEPLOY_TOKEN"
+reference = "{{secret:env://DEPLOY_TOKEN}}"
+
+# ── Dangerous-output action: never return stdout at all ─────────────────────
+
+[[action]]
+id = "db-maintenance"
+description = "Nightly database maintenance (output suppressed)"
+exec = ["/usr/local/bin/db-maintain", "--nightly"]
+user = "dbadmin"
+timeout_secs = 600
+output = "suppress"

@@ -90,6 +90,28 @@ ruleset and the normalization pipeline are what earn the zero.
 | Response inspection | All responses (including SSE) are buffered to a 16 MiB bound and structurally inspected — a secret split across SSE chunks cannot slip through; non-UTF-8 or malformed declared-JSON bodies fail closed. |
 | Credentials | Provider keys live in env/keychain/age vault and are injected **only** into the upstream `Authorization` header — never in prompts, URLs, or logs. |
 | Rule integrity | Opt-in HMAC-SHA256 manifests over rule files (`open-guardian sign`); tampering fails startup. |
+| Audit chain | Security events (proxy and broker) are hash-chained JSONL; `open-guardian verify` flags edits, deletions, and reordering. |
+
+## Action Broker (v0.5): privileged actions, zero credentials to the agent
+
+The egress proxy stops data leaving; the **Action Broker** lets the agent *do*
+things safely. It exposes allowlisted system actions (`systemctl restart
+nginx`, deploy scripts, …) over MCP and CLI behind four gates: an
+**ed25519-signed policy** (exact argv, no shell), **out-of-band approval**
+(a 6-char code that never crosses the agent channel), **hash-chained audit**
+(`open-guardian verify` detects any tampering), and **output DLP** (the same
+engine, applied to command output — a script echoing a token returns
+`<STRIPE-KEY>` instead).
+
+```console
+$ open-guardian broker request deploy-site "nightly deploy"
+✔ Request 4ddbc0b9 created — awaiting operator approval.
+$ open-guardian approve 4ddbc0b9 --code xquupe    # operator terminal
+✔ approved; executing.  exit_code: 0
+```
+
+Any MCP client works (`open-guardian mcp`, stdio, official Rust SDK). Full
+design, threat model, and sudoers guide in [docs/BROKER.md](docs/BROKER.md).
 
 ## Quick start
 
@@ -174,10 +196,10 @@ design.
 
 ## Roadmap
 
-- **v0.5 — Action Broker**: privileged system actions (restart nginx, apt
-  upgrade) for agents via MCP + CLI with signed policies, out-of-band
-  approval, surgical sudoers, and chained audit — the agent uses the
-  credential without ever seeing it. Harness-agnostic by design.
+- **v0.5 — Action Broker** ✔ *shipped*: privileged system actions for agents
+  via MCP + CLI with signed policies, out-of-band approval, surgical sudoers,
+  and chained audit — the agent uses the credential without ever seeing it.
+  Harness-agnostic by design. See [docs/BROKER.md](docs/BROKER.md).
 - **v0.6 — Context DLP**: sanitizing tool/command output before it enters
   model context.
 

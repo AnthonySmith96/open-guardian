@@ -1,6 +1,6 @@
 [package]
 name = "open-guardian"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
 rust-version = "1.88"
 license = "Apache-2.0"
@@ -11,9 +11,13 @@ keywords = ["ai", "security", "dlp", "llm", "proxy"]
 categories = ["network-programming"]
 
 [features]
-default = ["native-keyring", "portable-vault"]
+default = ["native-keyring", "portable-vault", "mcp", "desktop-notify"]
 native-keyring = ["dep:keyring", "dep:rpassword"]
 portable-vault = ["dep:age", "zeroize/serde"]
+# MCP tool server for AI agent harnesses (open-guardian mcp)
+mcp = ["dep:rmcp", "dep:schemars"]
+# Desktop notification cue for pending broker approvals (Unix only)
+desktop-notify = ["dep:notify-rust"]
 
 [dependencies]
 clap = { version = "4.4", features = ["derive"] }
@@ -51,6 +55,18 @@ hex = "0.4"
 unicode-normalization = "0.1"
 html-escape = "0.2"
 urlencoding = "2.1"
+
+# Action broker (v0.5): signed policies + MCP tool surface
+ed25519-dalek = { version = "3.0.0", default-features = false, features = ["fast", "zeroize"] }
+rmcp = { version = "=3.1.4", optional = true, default-features = false, features = [
+    "server",
+    "macros",
+    "transport-io",
+] }
+schemars = { version = "1.0", optional = true, default-features = false }
+
+[target.'cfg(unix)'.dependencies]
+notify-rust = { version = "4.18", optional = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-service = "0.7"

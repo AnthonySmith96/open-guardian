@@ -13,6 +13,24 @@ pub struct Config {
     pub routes: Option<HashMap<String, RouteConfig>>,
     pub load_balancer: Option<LoadBalancerConfig>,
     pub vault: Option<VaultConfig>,
+    pub broker: Option<BrokerConfig>,
+}
+
+/// Action Broker (v0.5) configuration. The daemon refuses to start unless
+/// both `policy` and `public_key` resolve and the signature verifies.
+#[derive(Deserialize, Debug, Default, Clone)]
+#[serde(deny_unknown_fields, default)]
+pub struct BrokerConfig {
+    /// Signed policy file (`policy.toml` + `policy.toml.sig`).
+    pub policy: Option<String>,
+    /// Pinned ed25519 public key (hex) for policy verification.
+    pub public_key: Option<String>,
+    /// Hash-chained audit log dedicated to the broker daemon.
+    pub audit_log_path: Option<String>,
+    /// Seconds a pending request waits for operator approval.
+    pub pending_ttl_secs: Option<u64>,
+    /// Seconds a finished result is retained (readable exactly once).
+    pub result_ttl_secs: Option<u64>,
 }
 
 #[derive(Deserialize, Debug, Default)]
@@ -218,6 +236,18 @@ fn make_resource_paths_absolute(config: &mut Config, config_path: &Path) {
         let path = Path::new(&vault.path);
         if !path.is_absolute() {
             vault.path = base_dir.join(path).to_string_lossy().into_owned();
+        }
+    }
+
+    if let Some(broker) = config.broker.as_mut() {
+        for path in [&mut broker.policy, &mut broker.public_key]
+            .into_iter()
+            .flatten()
+        {
+            let candidate = Path::new(path);
+            if !candidate.is_absolute() {
+                *path = base_dir.join(candidate).to_string_lossy().into_owned();
+            }
         }
     }
 }
