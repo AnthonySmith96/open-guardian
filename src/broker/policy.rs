@@ -393,25 +393,35 @@ pub fn sudoers_lines(policy: &Policy, invoking_user: &str) -> Vec<String> {
 mod tests {
     use super::*;
 
-    const MINIMAL_POLICY: &str = r#"
+    fn minimal_policy() -> String {
+        // Absolute programs so validation passes on every platform.
+        let (echo, systemctl) = if cfg!(windows) {
+            ("C:/Windows/System32/cmd.exe", "C:/Windows/System32/sc.exe")
+        } else {
+            ("/bin/echo", "/usr/bin/systemctl")
+        };
+        format!(
+            r#"
 version = 1
 
 [[action]]
 id = "echo-hello"
 description = "Echo hello"
-exec = ["/bin/echo", "hello"]
+exec = ["{echo}", "hello"]
 
 [[action]]
 id = "restart-nginx"
 description = "Restart nginx"
-exec = ["/usr/bin/systemctl", "restart", "nginx"]
+exec = ["{systemctl}", "restart", "nginx"]
 user = "root"
 timeout_secs = 30
 
 [[action.env]]
 name = "DEPLOY_TOKEN"
-reference = "{{secret:env://DEPLOY_TOKEN}}"
-"#;
+reference = "{{{{secret:env://DEPLOY_TOKEN}}}}"
+"#
+        )
+    }
 
     struct TempDir(std::path::PathBuf);
 
@@ -439,7 +449,7 @@ reference = "{{secret:env://DEPLOY_TOKEN}}"
         let dir = TempDir::new(tag);
         let policy_path = dir.path("policy.toml");
         let key_path = dir.path("policy.key");
-        std::fs::write(&policy_path, MINIMAL_POLICY).expect("write policy");
+        std::fs::write(&policy_path, minimal_policy()).expect("write policy");
         keygen(&key_path).expect("keygen");
         sign_policy(&policy_path, &key_path).expect("sign");
         (dir, policy_path, key_path.with_extension("pub"))
@@ -479,7 +489,7 @@ reference = "{{secret:env://DEPLOY_TOKEN}}"
         let dir = TempDir::new("nosig");
         let policy_path = dir.path("policy.toml");
         let key_path = dir.path("policy.key");
-        std::fs::write(&policy_path, MINIMAL_POLICY).expect("write");
+        std::fs::write(&policy_path, minimal_policy()).expect("write");
         keygen(&key_path).expect("keygen");
         // Never signed.
 
@@ -519,6 +529,7 @@ reference = "{{secret:env://DEPLOY_TOKEN}}"
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn sudoers_lines_are_exact_and_only_for_elevated_actions() {
         let (_dir, policy_path, pub_path) = signed_policy_dir("sudoers");

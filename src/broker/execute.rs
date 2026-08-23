@@ -210,14 +210,31 @@ mod tests {
         }
     }
 
+    /// Cross-platform argv: (unix argv, windows argv).
+    fn argv(unix: &[&str], windows: &[&str]) -> Vec<String> {
+        let parts = if cfg!(windows) { windows } else { unix };
+        parts.iter().map(|part| part.to_string()).collect()
+    }
+
+    fn action_argv(argv: Vec<String>) -> ActionDef {
+        ActionDef {
+            id: "test-action".into(),
+            description: "test".into(),
+            exec: argv,
+            user: None,
+            timeout_secs: 10,
+            output: OutputPolicy::Redact,
+            env: vec![],
+        }
+    }
+
     #[tokio::test]
     async fn plain_output_is_returned_verbatim() {
-        let result = execute_action(
-            &action(&["/bin/echo", "hello world"]),
-            &SecretBroker::new(),
-            &engine(),
-        )
-        .await;
+        let argv = argv(
+            &["/bin/echo", "hello world"],
+            &["C:/Windows/System32/cmd.exe", "/c", "echo", "hello world"],
+        );
+        let result = execute_action(&action_argv(argv), &SecretBroker::new(), &engine()).await;
         assert_eq!(result.exit_code, Some(0));
         assert_eq!(result.stdout.trim(), "hello world");
         assert!(result.error.is_none());
@@ -227,7 +244,15 @@ mod tests {
     async fn secret_printed_by_the_command_is_redacted() {
         // The secret comes from the env var the broker injected; the command
         // echoes it back. The agent-visible stdout must not contain it.
-        let mut def = action(&["/bin/sh", "-c", "printf 'token=%s\\n' \"$DEPLOY_TOKEN\""]);
+        let mut def = action_argv(argv(
+            &["/bin/sh", "-c", "printf 'token=%s\\n' \"$DEPLOY_TOKEN\""],
+            &[
+                "C:/Windows/System32/cmd.exe",
+                "/v:on",
+                "/c",
+                "echo token=!DEPLOY_TOKEN!",
+            ],
+        ));
         def.env = vec![env_binding(
             "DEPLOY_TOKEN",
             "{{secret:test://prod/deploy#token}}",
@@ -246,13 +271,24 @@ mod tests {
 
     #[tokio::test]
     async fn pii_in_output_is_redacted() {
-        let mut def = action(&["/bin/sh", "-c", "echo mail user@example.com done"]);
+        let mut def = action_argv(argv(
+            &["/bin/sh", "-c", "echo mail user@example.com done"],
+            &[
+                "C:/Windows/System32/cmd.exe",
+                "/c",
+                "echo",
+                "mail",
+                "user@example.com",
+                "done",
+            ],
+        ));
         def.env = vec![];
         let result = execute_action(&def, &SecretBroker::new(), &engine()).await;
         assert!(!result.stdout.contains("user@example.com"));
         assert!(result.stdout.contains("<EMAIL>") || result.stdout.contains("EMAIL"));
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn obfuscated_secret_suppresses_the_whole_output() {
         // Percent-encoded secret: plain redaction cannot rewrite it in place,
@@ -274,7 +310,10 @@ mod tests {
 
     #[tokio::test]
     async fn suppress_policy_never_returns_output() {
-        let mut def = action(&["/bin/echo", "innocuous"]);
+        let mut def = action_argv(argv(
+            &["/bin/echo", "innocuous"],
+            &["C:/Windows/System32/cmd.exe", "/c", "echo", "innocuous"],
+        ));
         def.output = OutputPolicy::Suppress;
         let result = execute_action(&def, &SecretBroker::new(), &engine()).await;
         assert_eq!(result.stdout, SUPPRESSED_BY_POLICY);
@@ -309,7 +348,17 @@ mod tests {
 
     #[tokio::test]
     async fn timeout_kills_the_process() {
-        let mut def = action(&["/bin/sleep", "30"]);
+        let mut def = action_argv(argv(
+            &["/bin/sleep", "30"],
+            &[
+                "C:/Windows/System32/cmd.exe",
+                "/c",
+                "ping",
+                "-n",
+                "30",
+                "127.0.0.1",
+            ],
+        ));
         def.timeout_secs = 1;
         let started = Instant::now();
         let result = execute_action(&def, &SecretBroker::new(), &engine()).await;
@@ -339,6 +388,7 @@ mod tests {
         assert_ne!(result.exit_code, Some(0));
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn oversized_output_is_truncated() {
         let mut def = action(&["/bin/sh", "-c", "yes 0123456789abcdef | head -c 200000"]);

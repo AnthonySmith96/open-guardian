@@ -668,14 +668,24 @@ mod tests {
     }
 
     fn echo_action() -> ActionDef {
-        ActionDef {
-            id: "echo-token".into(),
-            description: "Echo the deploy token (DLP must redact it)".into(),
-            exec: vec![
+        let exec: Vec<String> = if cfg!(windows) {
+            vec![
+                "C:/Windows/System32/cmd.exe".into(),
+                "/v:on".into(),
+                "/c".into(),
+                "echo deploy used token=!DEPLOY_TOKEN!".into(),
+            ]
+        } else {
+            vec![
                 "/bin/sh".into(),
                 "-c".into(),
                 "printf 'deploy used token=%s\\n' \"$DEPLOY_TOKEN\"".into(),
-            ],
+            ]
+        };
+        ActionDef {
+            id: "echo-token".into(),
+            description: "Echo the deploy token (DLP must redact it)".into(),
+            exec,
             user: None,
             timeout_secs: 10,
             output: OutputPolicy::Redact,
@@ -759,6 +769,23 @@ mod tests {
 
         fn audit_content(&self) -> String {
             std::fs::read_to_string(&self.audit_path).expect("audit file")
+        }
+
+        /// The chain writer is asynchronous: poll until the file exists and
+        /// contains the needle (deterministic on every platform).
+        async fn wait_for_audit(&self, needle: &str) -> String {
+            for _ in 0..100 {
+                if let Ok(content) = std::fs::read_to_string(&self.audit_path) {
+                    if content.contains(needle) {
+                        return content;
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            panic!(
+                "audit chain never contained {needle:?}: {:?}",
+                self.audit_content()
+            );
         }
     }
 
@@ -865,7 +892,7 @@ mod tests {
         );
 
         // The whole story is in the audit chain — and the chain verifies.
-        let audit = daemon.audit_content();
+        let audit = daemon.wait_for_audit("result_delivered").await;
         assert!(audit.contains("action_requested"));
         assert!(audit.contains("action_approve_rejected"));
         assert!(audit.contains("action_approved"));
@@ -912,7 +939,10 @@ mod tests {
         assert_eq!(status, 200);
         assert_eq!(body["status"], "denied");
 
-        assert!(daemon.audit_content().contains("action_denied"));
+        assert!(daemon
+            .wait_for_audit("action_denied")
+            .await
+            .contains("action_denied"));
     }
 
     #[tokio::test]
