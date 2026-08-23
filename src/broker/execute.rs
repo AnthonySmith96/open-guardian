@@ -236,7 +236,7 @@ mod tests {
                 "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
                 "-NoProfile",
                 "-Command",
-                "Write-Output hello world",
+                "Write-Output 'hello world'",
             ],
         );
         let result = execute_action(&action_argv(argv), &SecretBroker::new(), &engine()).await;
@@ -252,10 +252,10 @@ mod tests {
         let mut def = action_argv(argv(
             &["/bin/sh", "-c", "printf 'token=%s\\n' \"$DEPLOY_TOKEN\""],
             &[
-                "C:/Windows/System32/cmd.exe",
-                "/v:on",
-                "/c",
-                "echo token=!DEPLOY_TOKEN!",
+                "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+                "-NoProfile",
+                "-Command",
+                "Write-Output token=$env:DEPLOY_TOKEN",
             ],
         ));
         def.env = vec![env_binding(
@@ -279,12 +279,10 @@ mod tests {
         let mut def = action_argv(argv(
             &["/bin/sh", "-c", "echo mail user@example.com done"],
             &[
-                "C:/Windows/System32/cmd.exe",
-                "/c",
-                "echo",
-                "mail",
-                "user@example.com",
-                "done",
+                "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+                "-NoProfile",
+                "-Command",
+                "Write-Output 'mail user@example.com done'",
             ],
         ));
         def.env = vec![];
@@ -361,12 +359,10 @@ mod tests {
         let mut def = action_argv(argv(
             &["/bin/sleep", "30"],
             &[
-                "C:/Windows/System32/cmd.exe",
-                "/c",
-                "ping",
-                "-n",
-                "30",
-                "127.0.0.1",
+                "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+                "-NoProfile",
+                "-Command",
+                "Start-Sleep -Seconds 30",
             ],
         ));
         def.timeout_secs = 1;
