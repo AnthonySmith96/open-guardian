@@ -144,16 +144,27 @@ Design and threat model in [docs/CONTEXT.md](docs/CONTEXT.md).
 
 ## Quick start
 
+Install (pick one):
+
 ```bash
-# build
+cargo install open-guardian        # from crates.io
+# or a prebuilt binary for linux/macos/windows from
+# https://github.com/AnthonySmith96/open-guardian/releases (SHA256SUMS included)
+# or build from source:
+git clone https://github.com/AnthonySmith96/open-guardian && cd open-guardian
 cargo build --release
-
-# configure (see guardian.toml)
-export GROQ_API_KEY=...   # or use the native keychain / age vault
-
-# run
-./target/release/open-guardian start
 ```
+
+Configure and run:
+
+```bash
+export GROQ_API_KEY=...   # or use the native keychain / age vault
+open-guardian start
+```
+
+Rule files, the broker policy, and `guardian.toml` are looked up next to the
+binary first, then in the current directory — a `rules/` directory copied from
+the repo (or a release tarball) next to the binary is all the setup there is.
 
 Point your client at `http://127.0.0.1:8080/v1` with any API key value — the
 proxy replaces it with the brokered provider credential. Unmatched model names
