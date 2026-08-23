@@ -670,10 +670,10 @@ mod tests {
     fn echo_action() -> ActionDef {
         let exec: Vec<String> = if cfg!(windows) {
             vec![
-                "C:/Windows/System32/cmd.exe".into(),
-                "/v:on".into(),
-                "/c".into(),
-                "echo deploy used token=!DEPLOY_TOKEN!".into(),
+                "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe".into(),
+                "-NoProfile".into(),
+                "-Command".into(),
+                "Write-Output deploy-used-token=$env:DEPLOY_TOKEN".into(),
             ]
         } else {
             vec![

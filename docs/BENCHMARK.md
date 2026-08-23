@@ -4,7 +4,7 @@
 > by hand: CI regenerates this document and rejects drift, and any leak or
 > missed detection on the gated corpus fails the build.
 
-- Engine: open-guardian v0.4.0
+- Engine: open-guardian v0.5.0
 - Rules file: `rules/secrets.toml` (5806 bytes, 27 rules)
 - Corpus: 73 cases
 

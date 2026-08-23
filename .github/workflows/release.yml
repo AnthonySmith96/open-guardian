@@ -77,13 +77,14 @@ jobs:
         shell: bash
         run: |
           package="dist/open-guardian"
-          mkdir -p "$package/rules" "$package/docs/adr" "$package/benchmarks/corpus"
+          mkdir -p "$package/rules" "$package/docs/adr" "$package/benchmarks/corpus" "$package/examples"
           cp "target/${{ matrix.platform.target }}/release/${{ matrix.platform.binary }}" "$package/"
           cp guardian.toml README.md CHANGELOG.md LICENSE "$package/"
           cp rules/*.toml "$package/rules/"
           cp docs/adr/*.md "$package/docs/adr/"
-          cp docs/BENCHMARK.md "$package/docs/"
+          cp docs/BENCHMARK.md docs/BROKER.md docs/RELEASING.md "$package/docs/"
           cp benchmarks/corpus/*.toml "$package/benchmarks/corpus/"
+          cp examples/*.toml "$package/examples/"
           tar -C dist -czf "dist/${{ matrix.platform.archive }}" open-guardian
 
       - name: Stage Windows package
@@ -91,13 +92,14 @@ jobs:
         shell: pwsh
         run: |
           $package = "dist/open-guardian"
-          New-Item -ItemType Directory -Force "$package/rules", "$package/docs/adr", "$package/benchmarks/corpus" | Out-Null
+          New-Item -ItemType Directory -Force "$package/rules", "$package/docs/adr", "$package/benchmarks/corpus", "$package/examples" | Out-Null
           Copy-Item "target/${{ matrix.platform.target }}/release/${{ matrix.platform.binary }}" $package
           Copy-Item guardian.toml, README.md, CHANGELOG.md, LICENSE $package
           Copy-Item rules/*.toml "$package/rules/"
           Copy-Item docs/adr/*.md "$package/docs/adr/"
-          Copy-Item docs/BENCHMARK.md "$package/docs/"
+          Copy-Item docs/BENCHMARK.md, docs/BROKER.md, docs/RELEASING.md "$package/docs/"
           Copy-Item benchmarks/corpus/*.toml "$package/benchmarks/corpus/"
+          Copy-Item examples/*.toml "$package/examples/"
           Compress-Archive -Path $package -DestinationPath "dist/${{ matrix.platform.archive }}"
 
       - name: Upload package

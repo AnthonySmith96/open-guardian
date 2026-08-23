@@ -88,3 +88,16 @@ credential = "{{secret:env://GROQ_API_KEY}}"
 url = "https://api.openai.com/v1"
 model = "gpt-4-turbo"
 credential = "{{secret:env://OPENAI_API_KEY}}"
+
+# ==========================================
+# ACTION BROKER (v0.5) — uncomment to enable
+# ==========================================
+# Privileged actions for AI agents behind a signed policy, out-of-band
+# approval, chained audit, and output DLP. See docs/BROKER.md.
+#
+# [broker]
+# policy = "broker/policy.toml"        # signed with `open-guardian policy sign`
+# public_key = "broker/policy.pub"     # pinned ed25519 key
+# audit_log_path = "guardian_broker_audit.jsonl"
+# pending_ttl_secs = 120               # approval window
+# result_ttl_secs = 300                # one-time result retention

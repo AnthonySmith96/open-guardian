@@ -232,7 +232,12 @@ mod tests {
     async fn plain_output_is_returned_verbatim() {
         let argv = argv(
             &["/bin/echo", "hello world"],
-            &["C:/Windows/System32/cmd.exe", "/c", "echo", "hello world"],
+            &[
+                "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+                "-NoProfile",
+                "-Command",
+                "Write-Output hello world",
+            ],
         );
         let result = execute_action(&action_argv(argv), &SecretBroker::new(), &engine()).await;
         assert_eq!(result.exit_code, Some(0));
@@ -312,7 +317,12 @@ mod tests {
     async fn suppress_policy_never_returns_output() {
         let mut def = action_argv(argv(
             &["/bin/echo", "innocuous"],
-            &["C:/Windows/System32/cmd.exe", "/c", "echo", "innocuous"],
+            &[
+                "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+                "-NoProfile",
+                "-Command",
+                "Write-Output innocuous",
+            ],
         ));
         def.output = OutputPolicy::Suppress;
         let result = execute_action(&def, &SecretBroker::new(), &engine()).await;
@@ -380,12 +390,19 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn elevated_action_invokes_sudo_non_interactively() {
-        // No sudoers rule exists for the test user, so sudo must fail fast
-        // (-n forbids the password prompt) — proving the argv shape.
+        // A nonexistent target user fails under sudo no matter how sudoers is
+        // configured (CI runners ship NOPASSWD:ALL, so "sudo -u root echo"
+        // would succeed there). Success here would mean the sudo prefix is
+        // missing and the command ran directly.
         let mut def = action(&["/bin/echo", "hi"]);
-        def.user = Some("root".into());
+        def.user = Some("guardian-definitely-no-such-user".into());
         let result = execute_action(&def, &SecretBroker::new(), &engine()).await;
-        assert_ne!(result.exit_code, Some(0));
+        assert_ne!(
+            result.exit_code,
+            Some(0),
+            "command must go through sudo -n -u <user>"
+        );
+        assert!(result.error.is_none(), "spawn itself must succeed");
     }
 
     #[cfg(unix)]
