@@ -3,7 +3,8 @@
 
 use super::policy::{ActionDef, OutputPolicy};
 use super::state::ActionResult;
-use crate::security::{normalize_for_matching, DlpEngine};
+use crate::context::sanitize_text;
+use crate::security::DlpEngine;
 use open_guardian::secrets::SecretBroker;
 use std::time::Instant;
 
@@ -11,7 +12,6 @@ use std::time::Instant;
 const MAX_OUTPUT_BYTES: usize = 64 * 1024;
 
 const SUPPRESSED_BY_POLICY: &str = "[output suppressed by policy]";
-const SUPPRESSED_BY_DLP: &str = "[output suppressed: potential obfuscated sensitive data detected]";
 
 /// Runs one allowlisted action and returns a fully sanitized result. This
 /// function never returns Err: execution problems (missing binary, timeout,
@@ -141,27 +141,21 @@ fn truncate(text: &str) -> (String, bool) {
     (text[..cut].to_string(), true)
 }
 
-/// Applies the policy's output rule plus the DLP pipeline: one-way redaction
-/// of plain secrets/PII, then an obfuscation probe on the redacted text —
-/// anything suspicious left after redaction suppresses the whole stream.
+/// Applies the policy's output rule; the Redact arm is the shared Context DLP
+/// pipeline (one-way redaction, then an obfuscation probe that suppresses the
+/// whole stream if anything suspicious survives).
 fn sanitize(policy: OutputPolicy, dlp: &DlpEngine, text: &str) -> String {
     if policy == OutputPolicy::Suppress {
         return SUPPRESSED_BY_POLICY.to_string();
     }
-    let redacted = dlp.redact_permanent(text);
-    if dlp
-        .check_violations(&normalize_for_matching(&redacted))
-        .is_some()
-    {
-        return SUPPRESSED_BY_DLP.to_string();
-    }
-    redacted
+    sanitize_text(text, dlp)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::DlpConfig;
+    use crate::context::SUPPRESSED_BY_DLP;
     use crate::security::DlpEngine;
 
     fn engine() -> DlpEngine {

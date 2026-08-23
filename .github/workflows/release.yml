@@ -82,7 +82,7 @@ jobs:
           cp guardian.toml README.md CHANGELOG.md LICENSE "$package/"
           cp rules/*.toml "$package/rules/"
           cp docs/adr/*.md "$package/docs/adr/"
-          cp docs/BENCHMARK.md docs/BROKER.md docs/RELEASING.md "$package/docs/"
+          cp docs/BENCHMARK.md docs/BROKER.md docs/CONTEXT.md docs/RELEASING.md "$package/docs/"
           cp benchmarks/corpus/*.toml "$package/benchmarks/corpus/"
           cp examples/*.toml "$package/examples/"
           tar -C dist -czf "dist/${{ matrix.platform.archive }}" open-guardian
@@ -97,7 +97,7 @@ jobs:
           Copy-Item guardian.toml, README.md, CHANGELOG.md, LICENSE $package
           Copy-Item rules/*.toml "$package/rules/"
           Copy-Item docs/adr/*.md "$package/docs/adr/"
-          Copy-Item docs/BENCHMARK.md, docs/BROKER.md, docs/RELEASING.md "$package/docs/"
+          Copy-Item docs/BENCHMARK.md, docs/BROKER.md, docs/CONTEXT.md, docs/RELEASING.md "$package/docs/"
           Copy-Item benchmarks/corpus/*.toml "$package/benchmarks/corpus/"
           Copy-Item examples/*.toml "$package/examples/"
           Compress-Archive -Path $package -DestinationPath "dist/${{ matrix.platform.archive }}"

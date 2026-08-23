@@ -1,5 +1,36 @@
 # Changelog
 
+## v0.6.0 - Context DLP: clean tool output before it enters the model (2026-08-22)
+
+### New
+
+- **`open-guardian mcp-gateway -- <command>`**: wraps any MCP stdio server
+  and pipes the harness through it. Harness → downstream traffic forwards
+  verbatim; on the way back, every tool result (the JSON-RPC `CallToolResult`
+  shape — identified structurally, no request tracking needed) is sanitized
+  before it reaches the model. `initialize`, `tools/list`, notifications,
+  resources, prompts, and sampling pass through untouched, so the gateway is
+  invisible to both ends. Exits with the downstream's exit code.
+- **`open-guardian sanitize`**: stdin → stdout through the DLP engine, for
+  harness hooks and shell pipelines (`cat .env | open-guardian sanitize`);
+  `--file` reads from disk. Status messages go to stderr — stdout stays
+  pipe-clean. `--rules` (both commands) overrides the rules file for one
+  invocation.
+- **Shared sanitization pipeline**: Context DLP reuses the broker's output
+  rule verbatim — irreversible in-place redaction of secrets/PII
+  (`sk_live_…` → `<STRIPE-KEY>`), then an obfuscation probe that suppresses
+  the whole output when anything suspicious survives normalization
+  (fail-closed, corpus-proven). For tool results, redaction walks the entire
+  `result` tree (`content[].text`, `structuredContent` at any depth) and
+  probes JSON numbers too (bare-digit Luhn cards).
+
+### Fixed
+
+- Stdio-protocol subcommands (`mcp`, `mcp-gateway`, `sanitize`) no longer
+  print the startup banner or the config-loaded notice to stdout — stdout
+  carries MCP JSON-RPC frames / sanitized payload only. Strict harnesses
+  that reject non-protocol lines now work.
+
 ## v0.5.0 - Action Broker: privileged actions with out-of-band approval (2026-08-22)
 
 ### New

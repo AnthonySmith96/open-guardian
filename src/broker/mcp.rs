@@ -171,7 +171,7 @@ impl GuardianTools {
 
 #[tool_handler(
     name = "open-guardian",
-    version = "0.5.0",
+    version = "0.6.0",
     instructions = "Request privileged actions behind the operator's signed policy. Approval is always out-of-band; poll guardian_request_status for results."
 )]
 impl ServerHandler for GuardianTools {}

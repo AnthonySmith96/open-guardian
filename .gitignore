@@ -36,3 +36,4 @@ Thumbs.db
 # Carpetas de prueba
 deploy_test/
 logs/
+.zcode/
