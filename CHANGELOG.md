@@ -1,5 +1,45 @@
 # Changelog
 
+## v0.5.0 - Action Broker: privileged actions with out-of-band approval (2026-08-22)
+
+### New
+
+- **Action Broker daemon** (`open-guardian broker start`): executes
+  allowlisted privileged actions on behalf of AI agents behind four gates —
+  ed25519-**signed policies** (exact argv, no shell; tampered or unsigned
+  policies refuse to start), **out-of-band approval** (6-char code visible
+  only on the operator channel; wrong codes are audited and rejected),
+  **hash-chained audit**, and **output DLP** (command stdout/stderr runs
+  through the same DLP engine as the proxy; obfuscated secrets suppress the
+  whole output). Loopback-only IPC with separate agent/admin bearer tokens.
+- **MCP server** (`open-guardian mcp`): stdio transport via the official Rust
+  SDK (`rmcp`), three tools (`guardian_list_actions`,
+  `guardian_request_action`, `guardian_request_status`), harness-agnostic
+  (Claude Code, Cursor, Goose, …). The agent channel can never see approval
+  codes or approve anything.
+- **Operator CLI**: `approve` (code prompt or `--code`/`--yes`), `deny`,
+  `requests` (shows pending codes), `broker request` (terminal testing), and
+  `policy keygen|sign|verify|sudoers` (surgical
+  `/etc/sudoers.d/guardian-broker` lines with `visudo -f` instructions).
+- **Hash-chained audit log**: every security event (proxy and broker) is now
+  written as JSONL with `seq`/`prev`/`hash` linking; `open-guardian verify`
+  walks the chain and reports edits, deletions, or reordering with line
+  numbers. One chain per process (proxy and broker keep separate files).
+- **Secrets in executed actions**: policy env entries are `{{secret:...}}`
+  references resolved only at execution time and injected straight into the
+  child's environment (env/keychain/vault backends); unresolvable references
+  abort the action before anything runs. Results are delivered exactly once
+  and expire (Vault response-wrapping semantics; Teleport-style pending →
+  approve/deny → TTL state machine).
+- Docs: [docs/BROKER.md](docs/BROKER.md) (architecture, honest threat model,
+  sudoers guide), `examples/broker-policy.toml`.
+
+### Changed
+
+- Audit log lines gain `seq`, `prev`, and `hash` fields (previously plain
+  JSONL). Existing logs remain readable; `open-guardian verify` validates the
+  new format.
+
 ## v0.4.0 - The proof: regression-gated leak benchmark (2026-08-22)
 
 ### New

@@ -1,6 +1,7 @@
 mod audit;
 mod banner;
 mod bench;
+mod broker;
 mod config;
 mod logger;
 mod pipeline;
@@ -109,6 +110,97 @@ enum Commands {
     Secret {
         #[command(subcommand)]
         action: SecretAction,
+    },
+    /// Action Broker daemon and manual requests (v0.5)
+    Broker {
+        #[command(subcommand)]
+        action: BrokerAction,
+    },
+    /// Serve guardian tools over MCP stdio for AI agent harnesses
+    #[cfg(feature = "mcp")]
+    Mcp,
+    /// Manage the signed action policy (keygen, sign, verify, sudoers)
+    Policy {
+        #[command(subcommand)]
+        action: PolicyAction,
+    },
+    /// Approve a pending broker action request (operator channel)
+    Approve {
+        /// Request id shown by `open-guardian requests`
+        id: String,
+
+        /// Approval code (prompted if omitted)
+        #[arg(long)]
+        code: Option<String>,
+
+        /// Skip the approval-code check (explicit operator override)
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Deny a pending broker action request
+    Deny {
+        /// Request id shown by `open-guardian requests`
+        id: String,
+    },
+    /// List broker action requests (shows approval codes while pending)
+    Requests,
+    /// Verify the hash chain of an audit log
+    Verify {
+        /// Audit log file (proxy or broker)
+        #[arg(default_value = "guardian_audit.jsonl")]
+        log: String,
+    },
+}
+
+#[derive(Subcommand, Debug, Clone)]
+enum BrokerAction {
+    /// Start the broker daemon (loads the signed policy; loopback IPC only)
+    Start,
+    /// Submit an action request from the terminal (for testing without MCP)
+    Request {
+        /// Action id from the signed policy
+        action: String,
+
+        /// Justification shown to the operator
+        #[arg(default_value = "manual test")]
+        reason: String,
+    },
+}
+
+#[derive(Subcommand, Debug, Clone)]
+enum PolicyAction {
+    /// Generate an ed25519 keypair: <key> (secret, 0600) and <key>.pub
+    Keygen {
+        #[arg(long, default_value = "broker/policy.key")]
+        key: PathBuf,
+    },
+    /// Sign a policy file (writes <policy>.sig)
+    Sign {
+        #[arg(long, default_value = "broker/policy.toml")]
+        policy: PathBuf,
+
+        #[arg(long, default_value = "broker/policy.key")]
+        key: PathBuf,
+    },
+    /// Verify a policy signature and summarize its actions
+    Verify {
+        #[arg(long, default_value = "broker/policy.toml")]
+        policy: PathBuf,
+
+        #[arg(long, default_value = "broker/policy.pub")]
+        public_key: PathBuf,
+    },
+    /// Print the exact sudoers lines for the policy's elevated actions
+    Sudoers {
+        #[arg(long, default_value = "broker/policy.toml")]
+        policy: PathBuf,
+
+        #[arg(long, default_value = "broker/policy.pub")]
+        public_key: PathBuf,
+
+        /// OS user the broker daemon runs as
+        #[arg(long)]
+        user: Option<String>,
     },
 }
 
@@ -516,7 +608,231 @@ async fn run_app(
         Commands::Secret { action } => {
             handle_secret_command(action).await?;
         }
+        Commands::Broker { action } => match action {
+            BrokerAction::Start => {
+                broker::run_daemon(shutdown_token).await?;
+            }
+            BrokerAction::Request { action, reason } => {
+                let client = broker::client::BrokerClient::admin()?;
+                let created = client.request_action(&action, &reason).await?;
+                banner::print_success(&format!(
+                    "Request {} created ({}) — awaiting operator approval.",
+                    created.request_id, created.status
+                ));
+                println!(
+                    "  The operator sees: open-guardian approve {} --code <code>",
+                    created.request_id
+                );
+            }
+        },
+        #[cfg(feature = "mcp")]
+        Commands::Mcp => {
+            banner::print_step("Serving guardian MCP tools over stdio...");
+            broker::mcp::run_stdio().await?;
+        }
+        Commands::Policy { action } => handle_policy_command(action)?,
+        Commands::Approve { id, code, yes } => {
+            handle_approve(id, code, yes).await?;
+        }
+        Commands::Deny { id } => {
+            let client = broker::client::BrokerClient::admin()?;
+            client.deny(&id).await?;
+            banner::print_success(&format!("Request {id} denied."));
+        }
+        Commands::Requests => {
+            let client = broker::client::BrokerClient::admin()?;
+            let requests = client.list_requests().await?;
+            if requests.is_empty() {
+                banner::print_step("No broker requests.");
+                return Ok(());
+            }
+            for entry in requests {
+                let code = entry
+                    .code
+                    .as_deref()
+                    .map(|code| format!("  code: {code}"))
+                    .unwrap_or_default();
+                println!(
+                    "{}  {:<10}  {:<18}  {}{}",
+                    entry.id, entry.status, entry.action_id, entry.reason, code
+                );
+            }
+        }
+        Commands::Verify { log } => match crate::security::verify_audit_chain(&log) {
+            Ok(report) => {
+                banner::print_success(&format!(
+                    "Audit chain OK: {} events, tip {}",
+                    report.lines,
+                    &report.last_hash[..16.min(report.last_hash.len())]
+                ));
+            }
+            Err(broken) => {
+                return Err(anyhow::anyhow!(
+                    "AUDIT CHAIN BROKEN at line {}: {}",
+                    broken.line,
+                    broken.reason
+                ));
+            }
+        },
     }
 
+    Ok(())
+}
+
+fn handle_policy_command(action: PolicyAction) -> anyhow::Result<()> {
+    use broker::policy;
+
+    match action {
+        PolicyAction::Keygen { key } => {
+            let key = config::resolve_resource_path(key);
+            let verifying_key = policy::keygen(&key)?;
+            banner::print_success(&format!(
+                "Keypair generated for key id {}:\n  secret: {} (0600)\n  public: {}",
+                policy::key_id(&verifying_key),
+                key.display(),
+                key.with_extension("pub").display()
+            ));
+            banner::print_warning(
+                "Keep the secret key offline; pin the .pub in guardian.toml [broker].",
+            );
+        }
+        PolicyAction::Sign {
+            policy: policy_path,
+            key,
+        } => {
+            let policy_path = config::resolve_resource_path(policy_path);
+            let key = config::resolve_resource_path(key);
+            let key_id = policy::sign_policy(&policy_path, &key)?;
+            banner::print_success(&format!(
+                "Signed {} (key id {}) → {}.sig",
+                policy_path.display(),
+                key_id,
+                policy_path.display()
+            ));
+        }
+        PolicyAction::Verify {
+            policy: policy_path,
+            public_key,
+        } => {
+            let policy_path = config::resolve_resource_path(policy_path);
+            let public_key = config::resolve_resource_path(public_key);
+            let loaded = policy::load_signed_policy(&policy_path, &public_key)?;
+            banner::print_success(&format!(
+                "Policy signature valid (fingerprint {}). {} action(s):",
+                &loaded.fingerprint[..16.min(loaded.fingerprint.len())],
+                loaded.actions.len()
+            ));
+            for action in &loaded.actions {
+                let elevation = action
+                    .user
+                    .as_deref()
+                    .map(|user| format!("  (as {user})"))
+                    .unwrap_or_default();
+                println!("  {:<24} {}{}", action.id, action.description, elevation);
+            }
+        }
+        PolicyAction::Sudoers {
+            policy: policy_path,
+            public_key,
+            user,
+        } => {
+            let policy_path = config::resolve_resource_path(policy_path);
+            let public_key = config::resolve_resource_path(public_key);
+            let loaded = policy::load_signed_policy(&policy_path, &public_key)?;
+            let invoking_user = user
+                .or_else(|| {
+                    std::env::var("USER")
+                        .ok()
+                        .or_else(|| std::env::var("USERNAME").ok())
+                })
+                .unwrap_or_else(|| "guardian-broker".to_string());
+            let lines = policy::sudoers_lines(&loaded, &invoking_user);
+            if lines.is_empty() {
+                banner::print_step("No elevated actions in this policy; no sudoers rules needed.");
+                return Ok(());
+            }
+            println!("# /etc/sudoers.d/guardian-broker — install with: visudo -f /etc/sudoers.d/guardian-broker");
+            for line in lines {
+                println!("{line}");
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn handle_approve(id: String, code: Option<String>, yes: bool) -> anyhow::Result<()> {
+    use std::io::BufRead;
+
+    let client = broker::client::BrokerClient::admin()?;
+    let code = if yes {
+        None
+    } else {
+        match code {
+            Some(code) => Some(code),
+            None => {
+                print!("Approval code (see `open-guardian requests`): ");
+                use std::io::Write;
+                std::io::stdout().flush().ok();
+                let mut line = String::new();
+                std::io::stdin()
+                    .lock()
+                    .read_line(&mut line)
+                    .map_err(|error| anyhow::anyhow!("cannot read approval code: {error}"))?;
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    return Err(anyhow::anyhow!("no code given; aborted"));
+                }
+                Some(trimmed.to_string())
+            }
+        }
+    };
+
+    client.approve(&id, code.as_deref(), yes).await?;
+    banner::print_success(&format!("Request {id} approved; executing."));
+
+    // Poll briefly so the operator sees the outcome inline.
+    for _ in 0..40 {
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        let status = match client.status(&id).await {
+            Ok(status) => status,
+            Err(_) => continue,
+        };
+        match status.status.as_str() {
+            "executing" | "pending" => continue,
+            "completed" => {
+                if let Some(result) = status.result {
+                    println!(
+                        "  exit_code: {}",
+                        result
+                            .get("exit_code")
+                            .map(|v| v.to_string())
+                            .unwrap_or_default()
+                    );
+                    if let Some(error) = result.get("error").and_then(|v| v.as_str()) {
+                        println!("  error:     {error}");
+                    }
+                    if let Some(stdout) = result.get("stdout").and_then(|v| v.as_str()) {
+                        if !stdout.is_empty() {
+                            println!("  stdout:    {stdout}");
+                        }
+                    }
+                    if let Some(stderr) = result.get("stderr").and_then(|v| v.as_str()) {
+                        if !stderr.is_empty() {
+                            println!("  stderr:    {stderr}");
+                        }
+                    }
+                    return Ok(());
+                }
+                // Result already consumed elsewhere (e.g. the agent polled it).
+                println!("  completed (result was already delivered once).");
+                return Ok(());
+            }
+            other => {
+                banner::print_warning(&format!("Request {id} ended in state: {other}"));
+                return Ok(());
+            }
+        }
+    }
+    banner::print_step("Still executing; check `open-guardian requests` later.");
     Ok(())
 }

@@ -53,7 +53,7 @@ struct AppState {
     rate_limiter: Option<Arc<PerIpRateLimiter>>,
     default_upstream: String,
     routes: HashMap<String, RouteConfig>,
-    audit_log_path: Option<String>,
+    audit: Option<Arc<crate::security::AuditChain>>,
     verbose: bool,
     /// Semantic Load Balancer config (None = disabled).
     slb_config: Option<crate::config::LoadBalancerConfig>,
@@ -76,16 +76,15 @@ fn get_hmac_key() -> anyhow::Result<Option<String>> {
     }
 }
 
-/// Builds the fully wired proxy router: secret broker, DLP engine, rule
-/// integrity, rate limiting, and every handler. `start_server` serves it;
-/// the benchmark harness drives the same router in-process so it can never
-/// drift from production behavior.
-pub async fn build_router(config: &ServerConfig) -> anyhow::Result<(Router, usize)> {
+/// Wires the standard backend set (env, keychain, optional portable vault).
+/// Shared by the proxy and the action broker daemon so both resolve
+/// credentials through exactly the same machinery.
+pub async fn assemble_secret_broker(vault: Option<&VaultConfig>) -> anyhow::Result<SecretBroker> {
     let mut secret_broker = SecretBroker::new();
     secret_broker.register(EnvironmentBackend)?;
     #[cfg(feature = "native-keyring")]
     secret_broker.register(KeychainBackend)?;
-    if let Some(vault) = config.vault.as_ref() {
+    if let Some(vault) = vault {
         #[cfg(feature = "portable-vault")]
         {
             let identity = secret_broker
@@ -108,6 +107,15 @@ pub async fn build_router(config: &ServerConfig) -> anyhow::Result<(Router, usiz
             ));
         }
     }
+    Ok(secret_broker)
+}
+
+/// Builds the fully wired proxy router: secret broker, DLP engine, rule
+/// integrity, rate limiting, and every handler. `start_server` serves it;
+/// the benchmark harness drives the same router in-process so it can never
+/// drift from production behavior.
+pub async fn build_router(config: &ServerConfig) -> anyhow::Result<(Router, usize)> {
+    let secret_broker = assemble_secret_broker(config.vault.as_ref()).await?;
     let proxy = ProxyClient::new(config.timeout_seconds, Arc::new(secret_broker))?;
 
     // ── DLP engine: rule files load or the server refuses to start ──
@@ -164,6 +172,14 @@ pub async fn build_router(config: &ServerConfig) -> anyhow::Result<(Router, usiz
         limiter
     });
 
+    let audit = match &config.audit_log_path {
+        Some(path) => {
+            let (chain, _writer) = crate::security::AuditChain::open(path)?;
+            Some(chain)
+        }
+        None => None,
+    };
+
     let state = AppState {
         proxy: Arc::new(proxy),
         dlp_engine: Arc::new(dlp_engine),
@@ -171,7 +187,7 @@ pub async fn build_router(config: &ServerConfig) -> anyhow::Result<(Router, usiz
         rate_limiter,
         default_upstream: config.default_upstream.clone(),
         routes: config.routes.clone(),
-        audit_log_path: config.audit_log_path.clone(),
+        audit,
         verbose: config.verbose,
         slb_config: config.load_balancer.clone(),
         security_config: config.security.clone().unwrap_or_default(),
@@ -228,22 +244,10 @@ pub async fn start_server(
     Ok(())
 }
 
-fn log_security_event(path: Option<String>, event: Value) {
-    tokio::spawn(async move {
-        if let Some(log_path) = path {
-            if let Ok(line) = serde_json::to_string(&event) {
-                use tokio::io::AsyncWriteExt;
-                if let Ok(mut file) = tokio::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(log_path)
-                    .await
-                {
-                    let _ = file.write_all(format!("{line}\n").as_bytes()).await;
-                }
-            }
-        }
-    });
+fn log_security_event(chain: &Option<Arc<crate::security::AuditChain>>, event: Value) {
+    if let Some(chain) = chain {
+        chain.log(event);
+    }
 }
 
 /// Build the 403 Forbidden response for policy violations.
@@ -329,7 +333,7 @@ async fn handler(
             .unwrap_or_else(|| "Unknown smuggling attempt".to_string());
         banner::print_warning(&format!("Request smuggling attempt: {block_reason}"));
         log_security_event(
-            state.audit_log_path.clone(),
+            &state.audit,
             serde_json::json!({
                 "timestamp": Utc::now().to_rfc3339(),
                 "event": "smuggling_blocked",
@@ -349,7 +353,7 @@ async fn handler(
     if contains_proxy_path_traversal(&path_str) {
         banner::print_warning("Path traversal blocked");
         log_security_event(
-            state.audit_log_path.clone(),
+            &state.audit,
             serde_json::json!({
                 "timestamp": Utc::now().to_rfc3339(),
                 "event": "path_traversal_blocked",
@@ -364,7 +368,7 @@ async fn handler(
         if !limiter.check(connect_info.ip()).await {
             banner::print_warning(&format!("Rate limit exceeded for {}", connect_info.ip()));
             log_security_event(
-                state.audit_log_path.clone(),
+                &state.audit,
                 serde_json::json!({
                     "timestamp": Utc::now().to_rfc3339(),
                     "event": "rate_limited",
@@ -438,7 +442,7 @@ async fn handler(
                         violation.description, path_str
                     ));
                     log_security_event(
-                        state.audit_log_path.clone(),
+                        &state.audit,
                         serde_json::json!({
                             "timestamp": Utc::now().to_rfc3339(),
                             "event": "dlp_blocked",
@@ -468,7 +472,7 @@ async fn handler(
                 banner::print_success(&format!("Redacted sensitive data in request to {path_str}"));
                 tracing::info!("DLP redaction applied for request to {}", path_str);
                 log_security_event(
-                    state.audit_log_path.clone(),
+                    &state.audit,
                     serde_json::json!({
                         "timestamp": Utc::now().to_rfc3339(),
                         "event": "data_redacted",
@@ -503,7 +507,7 @@ async fn handler(
                         violation.description, path_str
                     ));
                     log_security_event(
-                        state.audit_log_path.clone(),
+                        &state.audit,
                         serde_json::json!({
                             "timestamp": Utc::now().to_rfc3339(),
                             "event": "dlp_obfuscated_blocked",

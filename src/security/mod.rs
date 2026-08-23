@@ -5,12 +5,16 @@
 //! - [`rate_limit`]: per-client-IP token buckets.
 //! - [`smuggling`]: request smuggling header checks.
 //! - [`integrity`]: HMAC manifests for the rule files.
+//! - [`audit_chain`]: hash-chained security audit log.
 
+pub mod audit_chain;
 pub mod dlp;
 pub mod integrity;
 pub mod normalizer;
 pub mod rate_limit;
 pub mod smuggling;
+
+pub use audit_chain::{verify as verify_audit_chain, AuditChain};
 
 pub use dlp::{DlpAction, DlpEngine, DlpViolation, RedactionSession};
 pub use normalizer::normalize_for_matching;
