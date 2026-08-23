@@ -3,6 +3,7 @@ mod banner;
 mod bench;
 mod broker;
 mod config;
+mod context;
 mod logger;
 mod pipeline;
 mod proxy;
@@ -149,6 +150,26 @@ enum Commands {
         /// Audit log file (proxy or broker)
         #[arg(default_value = "guardian_audit.jsonl")]
         log: String,
+    },
+    /// Wrap an MCP stdio server and sanitize its tool outputs (Context DLP)
+    McpGateway {
+        /// DLP rules file override (before --)
+        #[arg(long)]
+        rules: Option<PathBuf>,
+
+        /// Downstream MCP server after --, e.g. -- npx -y @modelcontextprotocol/server-github
+        #[arg(last = true, required = true)]
+        command: Vec<String>,
+    },
+    /// Sanitize text through the DLP engine: stdin → stdout (hooks, pipelines)
+    Sanitize {
+        /// Read from this file instead of stdin
+        #[arg(long)]
+        file: Option<PathBuf>,
+
+        /// DLP rules file override
+        #[arg(long)]
+        rules: Option<PathBuf>,
     },
 }
 
@@ -460,7 +481,28 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let cli = Cli::parse();
-    banner::print_banner();
+
+    // Stdio-protocol subcommands own stdout (MCP JSON-RPC frames, sanitize
+    // pipes): nothing but their payload may be printed there.
+    let owns_stdout = {
+        #[cfg(feature = "mcp")]
+        {
+            matches!(
+                cli.command,
+                Commands::Mcp | Commands::McpGateway { .. } | Commands::Sanitize { .. }
+            )
+        }
+        #[cfg(not(feature = "mcp"))]
+        {
+            matches!(
+                cli.command,
+                Commands::McpGateway { .. } | Commands::Sanitize { .. }
+            )
+        }
+    };
+    if !owns_stdout {
+        banner::print_banner();
+    }
 
     // Create a cancellation token for local runs (e.g. Ctrl+C)
     let shutdown_token = tokio_util::sync::CancellationToken::new();
@@ -627,7 +669,8 @@ async fn run_app(
         },
         #[cfg(feature = "mcp")]
         Commands::Mcp => {
-            banner::print_step("Serving guardian MCP tools over stdio...");
+            // MCP stdio carries the protocol on stdout: status to stderr only.
+            eprintln!("➜ Serving guardian MCP tools over stdio...");
             broker::mcp::run_stdio().await?;
         }
         Commands::Policy { action } => handle_policy_command(action)?,
@@ -674,6 +717,32 @@ async fn run_app(
                 ));
             }
         },
+        Commands::McpGateway { rules, command } => {
+            // MCP stdio carries the protocol on stdout: status goes to
+            // stderr only, or the harness connection breaks.
+            eprintln!("➜ MCP gateway up: {}", command.join(" "));
+            let engine = context::build_engine(rules)?;
+            let code = context::run_gateway(std::sync::Arc::new(engine), &command)?;
+            std::process::exit(code);
+        }
+        Commands::Sanitize { file, rules } => {
+            let engine = context::build_engine(rules)?;
+            let bytes = match file {
+                Some(path) => std::fs::read(path)?,
+                None => {
+                    let mut buffer = Vec::new();
+                    std::io::Read::read_to_end(&mut std::io::stdin(), &mut buffer)?;
+                    buffer
+                }
+            };
+            let input = String::from_utf8_lossy(&bytes);
+            let output = context::sanitize_text(&input, &engine);
+            if output.contains(context::SUPPRESSED_BY_DLP) {
+                // stdout stays pipe-clean; hooks consume it verbatim.
+                eprintln!("⚠ output suppressed: potential obfuscated sensitive data detected");
+            }
+            print!("{output}");
+        }
     }
 
     Ok(())

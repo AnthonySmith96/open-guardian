@@ -388,7 +388,9 @@ pub fn load_config() -> anyhow::Result<Config> {
         .map_err(|error| anyhow::anyhow!("failed to parse {}: {}", path.display(), error))?;
     make_resource_paths_absolute(&mut config, &path);
     normalize_credentials(&mut config)?;
-    banner::print_success(&format!("Loaded config from {}", path.display()));
+    // stderr: stdout belongs to protocol-carrying subcommands (mcp,
+    // mcp-gateway, sanitize) and must stay payload-only.
+    eprintln!(" ✔ Loaded config from {}", path.display());
     Ok(config)
 }
 

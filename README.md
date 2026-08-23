@@ -113,6 +113,25 @@ $ open-guardian approve 4ddbc0b9 --code xquupe    # operator terminal
 Any MCP client works (`open-guardian mcp`, stdio, official Rust SDK). Full
 design, threat model, and sudoers guide in [docs/BROKER.md](docs/BROKER.md).
 
+## Context DLP (v0.6): clean tool output before it enters the model
+
+Tool output never crosses the egress proxy — it goes straight into the
+conversation. **Context DLP** runs it through the same engine first:
+
+- `open-guardian mcp-gateway -- <command>` wraps **any** MCP stdio server:
+  requests pass through verbatim; every tool result comes back redacted
+  (`sk_live_…` → `<STRIPE-KEY>`, emails → `<EMAIL>`; obfuscated secrets
+  suppress the whole result, fail-closed).
+- `open-guardian sanitize` filters stdin → stdout for harness hooks and
+  pipelines (`cat .env | open-guardian sanitize`).
+
+```json
+{ "mcpServers": { "github": { "command": "open-guardian",
+  "args": ["mcp-gateway", "--", "npx", "-y", "@modelcontextprotocol/server-github"] } } }
+```
+
+Design and threat model in [docs/CONTEXT.md](docs/CONTEXT.md).
+
 ## Quick start
 
 ```bash
@@ -200,8 +219,10 @@ design.
   via MCP + CLI with signed policies, out-of-band approval, surgical sudoers,
   and chained audit — the agent uses the credential without ever seeing it.
   Harness-agnostic by design. See [docs/BROKER.md](docs/BROKER.md).
-- **v0.6 — Context DLP**: sanitizing tool/command output before it enters
-  model context.
+- **v0.6 — Context DLP** ✔ *shipped*: tool output sanitized before it enters
+  model context — an MCP gateway that wraps any stdio server and redacts
+  every tool result, plus a `sanitize` filter for hooks and pipelines.
+  See [docs/CONTEXT.md](docs/CONTEXT.md).
 
 ## Threat model and non-goals
 
