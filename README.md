@@ -1,10 +1,17 @@
 # Open-Guardian
 
-**Local egress data protection for AI agents.** Open-Guardian is a self-hosted
-proxy that sits between your AI agents (coding agents, chat clients, agent
-frameworks — anything that speaks the OpenAI HTTP API) and their model
-providers. Its single job: **secrets and sensitive data never leave your
-machine in a request, and provider credentials are never seen by the model.**
+**Local data protection for AI agents.** Open-Guardian is a self-hosted guard
+with three surfaces:
+
+1. **Egress proxy** — sits between your agents (coding agents, chat clients,
+   agent frameworks — anything that speaks the OpenAI HTTP API) and their
+   model providers. Secrets and sensitive data never leave your machine in a
+   request, and provider credentials are never seen by the model.
+2. **Action Broker** (v0.5) — allowlisted privileged actions over MCP/CLI
+   behind signed policies and human approval; the agent uses credentials
+   without ever seeing them.
+3. **Context DLP** (v0.6) — tool output sanitized before it enters the
+   model's context.
 
 Point any OpenAI-compatible client at the proxy:
 
@@ -16,6 +23,9 @@ Open-Guardian  ─── DLP: detect → redact → (restore locally)
         |  model alias routing + brokered credentials
         +--> local Ollama / vLLM (default)
         `--> explicit external route (Groq, OpenAI, ...)
+
+  open-guardian broker start    privileged actions, human approval (v0.5)
+  open-guardian mcp-gateway ... tool results sanitized in flight (v0.6)
 ```
 
 ## The one feature that matters: reversible redaction
