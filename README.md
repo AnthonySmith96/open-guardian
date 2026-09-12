@@ -229,10 +229,13 @@ At minimum, add tests for: parser rejection and boundary values, fail-closed
 configuration paths, no secret in `Debug`/errors/logs/JSON, chunk/event
 boundary behavior, cross-request token isolation, and external-route opt-in.
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the contributor workflow,
-[SECURITY.md](SECURITY.md) for reporting, and
-[ADR-0001](docs/adr/0001-portable-vault-format.md) for the portable vault
-design.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the contributor workflow and
+[SECURITY.md](SECURITY.md) for reporting.
+
+Architecture decisions live in [docs/adr/](docs/adr):
+[ADR-0001](docs/adr/0001-portable-vault-format.md) covers the portable vault
+design, [ADR-0002](docs/adr/0002-network-foundation.md) covers the network
+foundation (axum + reqwest) and the one milestone that would reopen it.
 
 ## Roadmap
 
