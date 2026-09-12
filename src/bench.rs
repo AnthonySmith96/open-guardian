@@ -136,8 +136,8 @@ fn validate_case(case: &Case) -> Result<()> {
         "benign",
     ];
     let valid_direction = ["request", "response"];
-    let valid_expect = ["redact", "block", "allow", "restore"];
-    let valid_mode = ["preset", "echo"];
+    let valid_expect = ["redact", "block", "allow", "restore", "neutralize"];
+    let valid_mode = ["preset", "echo", "model_echo"];
 
     if !valid_category.contains(&case.category.as_str()) {
         anyhow::bail!("case {}: invalid category '{}'", case.id, case.category);
@@ -155,12 +155,21 @@ fn validate_case(case: &Case) -> Result<()> {
             case.response_mode
         );
     }
-    if case.direction == "response" && case.response_body.is_none() {
+    if case.direction == "response"
+        && case.response_body.is_none()
+        && case.response_mode != "model_echo"
+    {
         anyhow::bail!("case {}: response direction needs response_body", case.id);
     }
     if case.expect == "restore" && case.response_mode != "echo" {
         anyhow::bail!(
             "case {}: restore expectation requires response_mode = \"echo\"",
+            case.id
+        );
+    }
+    if case.expect == "neutralize" && case.response_mode != "model_echo" {
+        anyhow::bail!(
+            "case {}: neutralize expectation requires response_mode = \"model_echo\"",
             case.id
         );
     }
@@ -207,9 +216,16 @@ fn materialize(case: &Case) -> (String, String) {
 
 #[derive(Clone, Debug)]
 enum MockResponse {
-    /// Reply with `{"echo": <received body>}` — proves placeholder
-    /// restoration round-trips through response inspection.
+    /// Reply with `{"echo": <received body, parsed and re-nested as JSON>}` —
+    /// an upstream that structurally mirrors the request under a wrapper key,
+    /// the legitimate shape for placeholder restoration.
     Echo,
+    /// Reply with a model-authored completion that repeats the session
+    /// placeholder token found in the received request — the model-echo
+    /// attack shape: the model, not the client, emits the token.
+    ModelEcho {
+        sse: bool,
+    },
     Preset {
         content_type: String,
         body: String,
@@ -255,10 +271,53 @@ async fn upstream_capture(State(harness): State<UpstreamHarness>, body: Bytes) -
     }) {
         MockResponse::Echo => {
             let received = String::from_utf8_lossy(&body).into_owned();
-            let payload = serde_json::json!({ "echo": received }).to_string();
+            let payload = match serde_json::from_str::<serde_json::Value>(&received) {
+                Ok(value) => serde_json::json!({ "echo": value }).to_string(),
+                // Non-JSON request: embed verbatim as a string field.
+                Err(_) => serde_json::json!({ "echo": received }).to_string(),
+            };
             (
                 StatusCode::OK,
                 [(axum::http::header::CONTENT_TYPE, "application/json")],
+                payload,
+            )
+                .into_response()
+        }
+        MockResponse::ModelEcho { sse } => {
+            let received = String::from_utf8_lossy(&body).into_owned();
+            // The request reached the upstream after redaction; whatever
+            // placeholder tokens it carries are all the model ever saw.
+            let token = received
+                .find("[[GUARDIAN_REDACTED:")
+                .and_then(|start| {
+                    received[start..]
+                        .find("]]")
+                        .map(|end| &received[start..start + end + 2])
+                })
+                .unwrap_or("no placeholder received");
+            let completion = serde_json::json!({
+                "choices": [{
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": format!("sure — using {token} as requested"),
+                    },
+                    "finish_reason": "stop"
+                }]
+            });
+            let payload = if sse {
+                format!("data: {completion}\n\ndata: [DONE]\n\n")
+            } else {
+                completion.to_string()
+            };
+            let content_type = if sse {
+                "text/event-stream"
+            } else {
+                "application/json"
+            };
+            (
+                StatusCode::OK,
+                [(axum::http::header::CONTENT_TYPE, content_type)],
                 payload,
             )
                 .into_response()
@@ -397,6 +456,11 @@ struct Observed {
     leaked: bool,
     redacted: bool,
     restored: bool,
+    /// A raw session placeholder token reached the client. Restorable
+    /// tokens are resolved before the response is released, so any
+    /// surviving raw token is either an echo that must have been
+    /// neutralized or a smuggling attempt.
+    placeholder_visible: bool,
     upstream_mutated: bool,
     block_detail: Option<String>,
 }
@@ -414,6 +478,9 @@ fn expectation_met(expect: &str, observed: &Observed) -> bool {
         // The differentiator: placeholder upstream, original value restored
         // locally in the response.
         "restore" => observed.forwarded && !observed.leaked && observed.restored,
+        // The model echoed a session placeholder in its own completion: no
+        // value may re-materialize and no raw token may reach the client.
+        "neutralize" => observed.forwarded && !observed.leaked && !observed.placeholder_visible,
         _ => false,
     }
 }
@@ -491,6 +558,9 @@ pub async fn run(opts: &BenchOptions) -> Result<BenchSummary> {
     for case in &cases {
         harness.set_response(match (case.response_mode.as_str(), &case.response_body) {
             ("echo", _) => Some(MockResponse::Echo),
+            ("model_echo", _) => Some(MockResponse::ModelEcho {
+                sse: case.response_content_type.contains("event-stream"),
+            }),
             (_, Some(body)) => Some(MockResponse::Preset {
                 content_type: case.response_content_type.clone(),
                 body: body.clone(),
@@ -532,6 +602,7 @@ pub async fn run(opts: &BenchOptions) -> Result<BenchSummary> {
         };
         let restored =
             case.response_mode == "echo" && !secret.is_empty() && client_body.contains(secret);
+        let placeholder_visible = client_body.contains(REVERSIBLE_PLACEHOLDER);
         let upstream_mutated = upstream_body
             .as_deref()
             .is_some_and(|observed| semantically_different(&request_body, observed));
@@ -542,6 +613,7 @@ pub async fn run(opts: &BenchOptions) -> Result<BenchSummary> {
             leaked,
             redacted,
             restored,
+            placeholder_visible,
             upstream_mutated,
             block_detail: (status == 403)
                 .then(|| extract_block_detail(&client_body))
@@ -827,6 +899,7 @@ mod tests {
             leaked: false,
             redacted: true,
             restored: false,
+            placeholder_visible: false,
             upstream_mutated: false,
             block_detail: None,
         };
@@ -835,6 +908,7 @@ mod tests {
         assert!(expectation_met("redact", &base));
         assert!(!expectation_met("block", &base));
         assert!(!expectation_met("restore", &base));
+        assert!(expectation_met("neutralize", &base));
 
         let blocked = Observed {
             status: 403,
@@ -843,18 +917,26 @@ mod tests {
         };
         assert!(expectation_met("block", &blocked));
         assert!(!expectation_met("redact", &blocked));
+        assert!(!expectation_met("neutralize", &blocked));
 
         let leaked = Observed {
             leaked: true,
             ..base.clone()
         };
         assert!(!expectation_met("redact", &leaked));
+        assert!(!expectation_met("neutralize", &leaked));
 
         let restored = Observed {
             restored: true,
-            ..base
+            ..base.clone()
         };
         assert!(expectation_met("restore", &restored));
+
+        let visible = Observed {
+            placeholder_visible: true,
+            ..base
+        };
+        assert!(!expectation_met("neutralize", &visible));
     }
 
     /// The regression gate, baked into the ordinary test run: the full corpus

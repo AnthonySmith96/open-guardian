@@ -36,12 +36,16 @@ Most egress filters strip data, which breaks the agent's task. Open-Guardian
 1. A request containing `sk-abc123...` or an internal IP is rewritten to an
    opaque, request-scoped placeholder `[[GUARDIAN_REDACTED:nonce:0:RULE]]`.
 2. The provider only ever sees the placeholder.
-3. When the response returns, placeholders are restored locally — the client
-   and the agent keep working with the real values.
+3. When the response returns, placeholders are restored locally — but only
+   where the response structurally mirrors the request position they were
+   redacted from (for example an upstream that echoes the request under a
+   wrapper key). The client and the agent keep working with the real values.
 
 Placeholders carry a per-request random nonce: fabricated or replayed tokens
-from another request are inert. Redacted values live in zeroized memory only
-for the lifetime of the request.
+from another request are inert, and a placeholder the *model* echoes back
+inside its own text is neutralized to `<REDACTED>` — a model can never
+re-materialize a value it was never shown. Redacted values live in zeroized
+memory only for the lifetime of the request.
 
 ## What it detects
 
@@ -86,7 +90,9 @@ It also states plainly what Open-Guardian does **not** catch (fragmented
 secrets, keys split across SSE events). On the same corpus, the official
 gitleaks.toml leaks 43 of 73 attempts — including every obfuscated variant —
 because file-scanning rules were never built for proxy traffic; the curated
-ruleset and the normalization pipeline are what earn the zero.
+ruleset and the normalization pipeline are what earn the zero. The corpus
+also gates the model-echo attack: a placeholder the model repeats in its own
+completion arrives neutralized, never re-materialized.
 
 ## How it enforces
 

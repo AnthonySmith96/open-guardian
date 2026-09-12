@@ -323,7 +323,12 @@ impl DlpEngine {
     }
 
     /// Reversible redaction entry point used on request bodies.
-    fn redact_session(&self, session: &mut RedactionSession, content: &str) -> String {
+    fn redact_session(
+        &self,
+        session: &mut RedactionSession,
+        content: &str,
+        pointer: Option<&str>,
+    ) -> String {
         let mut redacted = content.to_string();
         let cfg = &self.config;
 
@@ -336,23 +341,25 @@ impl DlpEngine {
                 redacted = rule
                     .regex
                     .replace_all(&redacted, |captures: &regex::Captures<'_>| {
-                        secret_replacement(captures, rule, |value| session.store(value, &rule.id))
+                        secret_replacement(captures, rule, |value| {
+                            session.store(value, &rule.id, pointer)
+                        })
                     })
                     .into_owned();
             }
         }
         if cfg.ssn_enabled() {
-            redacted = session.redact_matches(redacted, ssn_re(), "SSN");
+            redacted = session.redact_matches(redacted, ssn_re(), "SSN", pointer);
         }
         if cfg.email_enabled() {
-            redacted = session.redact_matches(redacted, email_re(), "EMAIL");
+            redacted = session.redact_matches(redacted, email_re(), "EMAIL", pointer);
         }
         if cfg.cc_enabled() {
             redacted = cc_re()
                 .replace_all(&redacted, |captures: &regex::Captures<'_>| {
                     let candidate = &captures[0];
                     if luhn_valid(candidate) {
-                        session.store(candidate, "CC")
+                        session.store(candidate, "CC", pointer)
                     } else {
                         candidate.to_string()
                     }
@@ -360,10 +367,10 @@ impl DlpEngine {
                 .into_owned();
         }
         if cfg.phone_enabled() {
-            redacted = session.redact_matches(redacted, phone_re(), "PHONE");
+            redacted = session.redact_matches(redacted, phone_re(), "PHONE", pointer);
         }
         if cfg.ip_enabled() {
-            redacted = session.redact_matches(redacted, ipv4_re(), "IP");
+            redacted = session.redact_matches(redacted, ipv4_re(), "IP", pointer);
         }
 
         redacted
@@ -521,9 +528,42 @@ fn contains_valid_card(content: &str) -> bool {
 
 // ── Per-request reversible redaction ──
 
+/// Replacement for a session placeholder found at a response position that
+/// does not structurally correspond to where the value was redacted.
+pub const NEUTRALIZED_MARKER: &str = "<REDACTED>";
+
+const PLACEHOLDER_PREFIX: &str = "[[GUARDIAN_REDACTED:";
+
 struct RedactedValue {
     token: String,
     value: Zeroizing<String>,
+    /// JSON pointer of the request field the value was redacted from.
+    /// `None` for payloads that were not walked as JSON.
+    pointer: Option<String>,
+}
+
+/// Outcome of a path-scoped restoration pass.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RestoreStats {
+    pub restored: usize,
+    pub neutralized: usize,
+}
+
+/// True when the response pointer structurally corresponds to the pointer
+/// the value was redacted at: the minted pointer is a tail of the response
+/// pointer (e.g. `/messages/0/content` under an upstream echo wrapper
+/// `/echo/messages/0/content`). Model-authored positions such as
+/// `/choices/0/message/content` never correspond.
+fn pointer_tail_matches(response: &str, minted: &str) -> bool {
+    fn segments(pointer: &str) -> Vec<&str> {
+        pointer
+            .split('/')
+            .filter(|segment| !segment.is_empty())
+            .collect()
+    }
+    let response = segments(response);
+    let minted = segments(minted);
+    response.len() >= minted.len() && response[response.len() - minted.len()..] == minted[..]
 }
 
 /// Per-request reversible redaction map. Values live only until the
@@ -545,34 +585,74 @@ impl RedactionSession {
     }
 
     /// Replaces sensitive values with opaque, request-scoped tokens
-    /// using every detector in the engine.
+    /// using every detector in the engine. For payloads not walked as
+    /// JSON (no pointer context); such tokens are never restorable.
     pub fn redact(&mut self, content: &str, engine: &DlpEngine) -> String {
-        engine.redact_session(self, content)
+        self.redact_at(content, engine, None)
     }
 
-    /// Restores only tokens minted by this request. Fabricated or replayed
-    /// tokens from another request remain inert.
-    pub fn restore(&self, content: &str) -> String {
+    /// Same as [`redact`](Self::redact), recording the JSON pointer the
+    /// string was extracted from so restoration can be scoped to it.
+    pub fn redact_at(
+        &mut self,
+        content: &str,
+        engine: &DlpEngine,
+        pointer: Option<&str>,
+    ) -> String {
+        engine.redact_session(self, content, pointer)
+    }
+
+    /// Restores tokens only where the response position structurally
+    /// corresponds to the request position the value was redacted from.
+    /// A session token found anywhere else — model-authored text echoing
+    /// the placeholder, object keys, payloads without pointer context —
+    /// is replaced with [`NEUTRALIZED_MARKER`] instead of the value, so an
+    /// echoed placeholder can never re-materialize a secret. Fabricated or
+    /// replayed tokens from another request remain inert.
+    pub fn restore_at(&self, content: &str, pointer: Option<&str>) -> (String, RestoreStats) {
+        let mut stats = RestoreStats::default();
+        if self.values.is_empty() || !content.contains(PLACEHOLDER_PREFIX) {
+            return (content.to_string(), stats);
+        }
         let mut restored = content.to_string();
         for entry in &self.values {
-            restored = restored.replace(&entry.token, entry.value.as_str());
+            if !restored.contains(&entry.token) {
+                continue;
+            }
+            let eligible = match (pointer, entry.pointer.as_deref()) {
+                (Some(response), Some(minted)) => pointer_tail_matches(response, minted),
+                _ => false,
+            };
+            if eligible {
+                stats.restored += 1;
+                restored = restored.replace(&entry.token, entry.value.as_str());
+            } else {
+                stats.neutralized += 1;
+                restored = restored.replace(&entry.token, NEUTRALIZED_MARKER);
+            }
         }
-        restored
+        (restored, stats)
     }
 
     pub fn redaction_count(&self) -> usize {
         self.values.len()
     }
 
-    fn redact_matches(&mut self, input: String, pattern: &Regex, category: &str) -> String {
+    fn redact_matches(
+        &mut self,
+        input: String,
+        pattern: &Regex,
+        category: &str,
+        pointer: Option<&str>,
+    ) -> String {
         pattern
             .replace_all(&input, |captures: &regex::Captures<'_>| {
-                self.store(&captures[0], category)
+                self.store(&captures[0], category, pointer)
             })
             .into_owned()
     }
 
-    fn store(&mut self, value: &str, category: &str) -> String {
+    fn store(&mut self, value: &str, category: &str, pointer: Option<&str>) -> String {
         let token = format!(
             "[[GUARDIAN_REDACTED:{}:{}:{}]]",
             self.nonce,
@@ -582,6 +662,7 @@ impl RedactionSession {
         self.values.push(RedactedValue {
             token: token.clone(),
             value: Zeroizing::new(value.to_string()),
+            pointer: pointer.map(str::to_owned),
         });
         token
     }
@@ -773,13 +854,16 @@ keywords = ["tpk_"]
         assert_eq!(engine.rule_count(), 1);
 
         let mut session = RedactionSession::new();
-        let redacted = session.redact("key tpk_abcdefghij1234567890 here", &engine);
+        let redacted = session.redact_at(
+            "key tpk_abcdefghij1234567890 here",
+            &engine,
+            Some("/messages/0/content"),
+        );
         assert!(redacted.contains("TESTFILE-KEY"));
         assert!(!redacted.contains("tpk_abcdefghij"));
-        assert_eq!(
-            session.restore(&redacted),
-            "key tpk_abcdefghij1234567890 here"
-        );
+        let (restored, stats) = session.restore_at(&redacted, Some("/messages/0/content"));
+        assert_eq!(restored, "key tpk_abcdefghij1234567890 here");
+        assert_eq!(stats.restored, 1);
 
         let _ = std::fs::remove_file(&file);
     }
@@ -866,12 +950,15 @@ regex = '(?P<nested(unclosed'
         let mut session = RedactionSession::new();
         let input = "Connect to 192.168.1.100 as admin@example.com";
 
-        let redacted = session.redact(input, &engine);
+        let redacted = session.redact_at(input, &engine, Some("/messages/0/content"));
 
         assert!(!redacted.contains("192.168.1.100"));
         assert!(!redacted.contains("admin@example.com"));
         assert_eq!(session.redaction_count(), 2);
-        assert_eq!(session.restore(&redacted), input);
+        let (restored, stats) = session.restore_at(&redacted, Some("/messages/0/content"));
+        assert_eq!(restored, input);
+        assert_eq!(stats.restored, 2);
+        assert_eq!(stats.neutralized, 0);
     }
 
     #[test]
@@ -879,7 +966,81 @@ regex = '(?P<nested(unclosed'
         let session = RedactionSession::new();
         let fabricated = "[[GUARDIAN_REDACTED:foreign:0:KEY]]";
 
-        assert_eq!(session.restore(fabricated), fabricated);
+        let (restored, stats) = session.restore_at(fabricated, None);
+        assert_eq!(restored, fabricated);
+        assert_eq!(stats, super::RestoreStats::default());
+    }
+
+    #[test]
+    fn echoed_placeholder_in_model_position_is_neutralized() {
+        let engine = DlpEngine::builtin_only(&DlpConfig::default());
+        let mut session = RedactionSession::new();
+        let redacted = session.redact_at(
+            "Connect to 192.168.10.25",
+            &engine,
+            Some("/messages/0/content"),
+        );
+        assert!(redacted.contains("[[GUARDIAN_REDACTED:"));
+
+        // The model echoes the placeholder inside its own authored text.
+        let echo = format!("Sure, I will use {redacted} in the config.");
+        let (restored, stats) = session.restore_at(&echo, Some("/choices/0/message/content"));
+        assert!(!restored.contains("192.168.10.25"));
+        assert!(!restored.contains("[[GUARDIAN_REDACTED:"));
+        assert!(restored.contains(super::NEUTRALIZED_MARKER));
+        assert_eq!(stats.restored, 0);
+        assert_eq!(stats.neutralized, 1);
+    }
+
+    #[test]
+    fn echoed_placeholder_without_pointer_context_is_neutralized() {
+        let engine = DlpEngine::builtin_only(&DlpConfig::default());
+        let mut session = RedactionSession::new();
+        // Redacted without pointer context (non-JSON payload)…
+        let redacted = session.redact("Connect to 192.168.10.25", &engine);
+        assert!(redacted.contains("[[GUARDIAN_REDACTED:"));
+        // …and answered without pointer context (plain-text response).
+        let (restored, stats) = session.restore_at(&redacted, None);
+        assert!(!restored.contains("192.168.10.25"));
+        assert!(restored.contains(super::NEUTRALIZED_MARKER));
+        assert_eq!(stats.restored, 0);
+        assert_eq!(stats.neutralized, 1);
+    }
+
+    #[test]
+    fn echo_wrapper_pointer_restores() {
+        let engine = DlpEngine::builtin_only(&DlpConfig::default());
+        let mut session = RedactionSession::new();
+        let original = "Connect to 192.168.10.25";
+        let redacted = session.redact_at(original, &engine, Some("/messages/0/content"));
+
+        // An upstream that mirrors the request under a wrapper key keeps the
+        // request's structure: the response pointer ends with the minted one.
+        let (restored, stats) = session.restore_at(&redacted, Some("/echo/messages/0/content"));
+        assert_eq!(restored, original);
+        assert_eq!(stats.restored, 1);
+        assert_eq!(stats.neutralized, 0);
+    }
+
+    #[test]
+    fn pointer_tail_must_match_whole_segments() {
+        // `/xmessages` shares the suffix string but not the segment boundary.
+        assert!(!super::pointer_tail_matches(
+            "/choices/0/xmessages/0/content",
+            "/messages/0/content"
+        ));
+        assert!(super::pointer_tail_matches(
+            "/echo/messages/0/content",
+            "/messages/0/content"
+        ));
+        assert!(super::pointer_tail_matches(
+            "/messages/0/content",
+            "/messages/0/content"
+        ));
+        assert!(!super::pointer_tail_matches(
+            "/messages/0/content",
+            "/echo/messages/0/content"
+        ));
     }
 
     #[test]

@@ -95,3 +95,27 @@ expect = "restore"
 response_mode = "echo"
 secret = "gsk_Qw3Er5Ty7Ui9Op1As3DfGh"
 body = '''{"model":"llama-3.3-70b","messages":[{"role":"user","content":"echo the value gsk_Qw3Er5Ty7Ui9Op1As3DfGh back"}]}'''
+
+# The model-echo attack (v0.6.1): the model repeats a session placeholder it
+# saw in the redacted request inside its own authored completion. Restoration
+# is scoped to the request position, so an echoed token must arrive
+# neutralized — the value never re-materializes and the raw token never
+# reaches the client.
+[[case]]
+id = "response-model-echo-placeholder-json"
+category = "response"
+direction = "response"
+expect = "neutralize"
+response_mode = "model_echo"
+secret = "gsk_Qw3Er5Ty7Ui9Op1As3DfGh"
+body = '''{"model":"llama-3.3-70b","messages":[{"role":"user","content":"my key is gsk_Qw3Er5Ty7Ui9Op1As3DfGh — use it and confirm"}]}'''
+
+[[case]]
+id = "response-model-echo-placeholder-sse"
+category = "response"
+direction = "response"
+expect = "neutralize"
+response_mode = "model_echo"
+response_content_type = "text/event-stream"
+secret = "gsk_Qw3Er5Ty7Ui9Op1As3DfGh"
+body = '''{"model":"llama-3.3-70b","messages":[{"role":"user","content":"my key is gsk_Qw3Er5Ty7Ui9Op1As3DfGh — stream a confirmation"}]}'''

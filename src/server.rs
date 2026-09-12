@@ -459,7 +459,11 @@ async fn handler(
                 }
             }
 
-            let cleaned = redaction_session.redact(&content_text, &state.dlp_engine);
+            let cleaned = redaction_session.redact_at(
+                &content_text,
+                &state.dlp_engine,
+                Some(&target.json_pointer),
+            );
             if state.verbose {
                 println!(
                     "   {} DLP scan+redact: {:?}",
