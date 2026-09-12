@@ -4,9 +4,9 @@
 > by hand: CI regenerates this document and rejects drift, and any leak or
 > missed detection on the gated corpus fails the build.
 
-- Engine: open-guardian v0.6.0
+- Engine: open-guardian v0.6.1
 - Rules file: `rules/secrets.toml` (5806 bytes, 27 rules)
-- Corpus: 73 cases
+- Corpus: 75 cases
 
 ## Results
 
@@ -17,7 +17,7 @@
 | placement | 13 | 13 | 0 | 13 | 0 |
 | plain | 31 | 31 | 0 | 31 | 0 |
 | policy | 1 | 0 | 1 | 0 | 0 |
-| response | 8 | 8 | 0 | 7 | 1 |
+| response | 10 | 10 | 0 | 7 | 1 |
 
 False positives on the benign corpus: 0/11 (0.0%), tolerated maximum 2%.
 

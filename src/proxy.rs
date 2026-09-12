@@ -16,12 +16,17 @@ const MAX_INSPECTABLE_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 struct ResponseMutation {
     redacted: bool,
     restored: bool,
+    neutralized: bool,
 }
 
 impl ResponseMutation {
     fn merge(&mut self, other: Self) {
         self.redacted |= other.redacted;
         self.restored |= other.restored;
+        self.neutralized |= other.neutralized;
+    }
+    fn changed(&self) -> bool {
+        self.redacted || self.restored || self.neutralized
     }
 }
 
@@ -31,11 +36,17 @@ enum ResponseInspectionError {
     InvalidJson,
 }
 
+/// RFC 6901 escaping for a JSON pointer token (object key or array index).
+fn escape_pointer_token(token: &str) -> String {
+    token.replace('~', "~0").replace('/', "~1")
+}
+
 fn transform_response_string(
     input: &str,
     dlp_engine: &DlpEngine,
     dlp_action: DlpAction,
     redactions: &RedactionSession,
+    pointer: Option<&str>,
 ) -> std::result::Result<(String, ResponseMutation), ResponseInspectionError> {
     if dlp_action == DlpAction::Block {
         if let Some(violation) = dlp_engine.check_violations(input) {
@@ -48,11 +59,12 @@ fn transform_response_string(
     } else {
         input.to_string()
     };
-    let restored = redactions.restore(&redacted);
+    let (restored, stats) = redactions.restore_at(&redacted, pointer);
 
     let mutation = ResponseMutation {
         redacted: redacted != input,
-        restored: restored != redacted,
+        restored: stats.restored > 0,
+        neutralized: stats.neutralized > 0,
     };
     Ok((restored, mutation))
 }
@@ -62,33 +74,44 @@ fn transform_json_strings(
     dlp_engine: &DlpEngine,
     dlp_action: DlpAction,
     redactions: &RedactionSession,
+    pointer: &str,
 ) -> std::result::Result<ResponseMutation, ResponseInspectionError> {
     let mut mutation = ResponseMutation::default();
 
     match value {
         serde_json::Value::String(text) => {
             let (transformed, string_mutation) =
-                transform_response_string(text, dlp_engine, dlp_action, redactions)?;
-            if string_mutation.redacted || string_mutation.restored {
+                transform_response_string(text, dlp_engine, dlp_action, redactions, Some(pointer))?;
+            if string_mutation.changed() {
                 *text = transformed;
             }
             mutation.merge(string_mutation);
         }
         serde_json::Value::Array(values) => {
-            for value in values {
+            for (index, value) in values.iter_mut().enumerate() {
                 mutation.merge(transform_json_strings(
-                    value, dlp_engine, dlp_action, redactions,
+                    value,
+                    dlp_engine,
+                    dlp_action,
+                    redactions,
+                    &format!("{pointer}/{index}"),
                 )?);
             }
         }
         serde_json::Value::Object(values) => {
             let original = std::mem::take(values);
             for (key, mut value) in original {
+                // Object keys have no JSON pointer of their own (their value
+                // does), so a placeholder found in a key is never restorable.
                 let (key, key_mutation) =
-                    transform_response_string(&key, dlp_engine, dlp_action, redactions)?;
+                    transform_response_string(&key, dlp_engine, dlp_action, redactions, None)?;
                 mutation.merge(key_mutation);
                 mutation.merge(transform_json_strings(
-                    &mut value, dlp_engine, dlp_action, redactions,
+                    &mut value,
+                    dlp_engine,
+                    dlp_action,
+                    redactions,
+                    &format!("{pointer}/{}", escape_pointer_token(&key)),
                 )?);
                 if values.insert(key, value).is_some() {
                     return Err(ResponseInspectionError::InvalidJson);
@@ -119,8 +142,8 @@ fn inspect_json_response(
 ) -> std::result::Result<(String, ResponseMutation), ResponseInspectionError> {
     let mut value = serde_json::from_str::<serde_json::Value>(body)
         .map_err(|_| ResponseInspectionError::InvalidJson)?;
-    let mutation = transform_json_strings(&mut value, dlp_engine, dlp_action, redactions)?;
-    if mutation.redacted || mutation.restored {
+    let mutation = transform_json_strings(&mut value, dlp_engine, dlp_action, redactions, "")?;
+    if mutation.changed() {
         let serialized =
             serde_json::to_string(&value).map_err(|_| ResponseInspectionError::InvalidJson)?;
         Ok((serialized, mutation))
@@ -165,8 +188,8 @@ fn inspect_sse_response(
         let (transformed, line_mutation) =
             if let Ok(mut value) = serde_json::from_str::<serde_json::Value>(payload) {
                 let line_mutation =
-                    transform_json_strings(&mut value, dlp_engine, dlp_action, redactions)?;
-                if line_mutation.redacted || line_mutation.restored {
+                    transform_json_strings(&mut value, dlp_engine, dlp_action, redactions, "")?;
+                if line_mutation.changed() {
                     (
                         serde_json::to_string(&value)
                             .map_err(|_| ResponseInspectionError::InvalidJson)?,
@@ -176,7 +199,9 @@ fn inspect_sse_response(
                     (payload.to_string(), line_mutation)
                 }
             } else {
-                transform_response_string(payload, dlp_engine, dlp_action, redactions)?
+                // A non-JSON data line has no pointer context, so any session
+                // placeholder inside it is neutralized, never restored.
+                transform_response_string(payload, dlp_engine, dlp_action, redactions, None)?
             };
 
         output.push_str(&line[..prefix_len]);
@@ -204,7 +229,9 @@ fn inspect_response_text(
     } else if is_json_content_type(content_type) {
         inspect_json_response(body, dlp_engine, dlp_action, redactions)
     } else {
-        transform_response_string(body, dlp_engine, dlp_action, redactions)
+        // A non-JSON body has no structure to scope restoration to, so any
+        // session placeholder inside it is neutralized, never restored.
+        transform_response_string(body, dlp_engine, dlp_action, redactions, None)
     }
 }
 
@@ -508,6 +535,14 @@ impl ProxyClient {
                 redactions.redaction_count()
             );
         }
+        if mutation.neutralized {
+            banner::print_warning(&format!(
+                "Neutralized echoed redaction placeholder in response from {path} (not re-materialized)"
+            ));
+            tracing::warn!(
+                "DLP: placeholder echoed at a non-corresponding position in response from {path}; neutralized"
+            );
+        }
 
         Ok(res_builder
             .body(axum::body::Body::from(body_final.into_bytes()))
@@ -660,8 +695,13 @@ mod tests {
     fn response_placeholder_restoration_remains_valid_json() {
         let original = r#"api_key="abcdefghijklmnopqrstuvwxyz123456""#;
         let mut session = RedactionSession::new();
-        let placeholder = session.redact(original, &engine());
-        let body = serde_json::json!({ "message": placeholder }).to_string();
+        let placeholder = session.redact_at(original, &engine(), Some("/messages/0/content"));
+        // Upstream mirrors the request under a wrapper key: the response
+        // pointer /echo/messages/0/content corresponds to the minted one.
+        let body = serde_json::json!({ "echo": { "messages": [
+            { "role": "user", "content": placeholder }
+        ] } })
+        .to_string();
 
         let (inspected, mutation) = inspect_response_text(
             &body,
@@ -673,8 +713,68 @@ mod tests {
         .expect("inspect response");
 
         let parsed: serde_json::Value = serde_json::from_str(&inspected).expect("valid JSON");
-        assert_eq!(parsed["message"], original);
+        assert_eq!(parsed["echo"]["messages"][0]["content"], original);
         assert!(mutation.restored);
+        assert!(!mutation.neutralized);
+    }
+
+    #[test]
+    fn response_placeholder_echoed_by_model_is_neutralized() {
+        let original = r#"api_key="abcdefghijklmnopqrstuvwxyz123456""#;
+        let mut session = RedactionSession::new();
+        let placeholder = session.redact_at(original, &engine(), Some("/messages/0/content"));
+        // Model-authored position: /choices/0/message/content does not
+        // correspond to /messages/0/content.
+        let body = serde_json::json!({ "choices": [
+            { "index": 0, "message": { "role": "assistant", "content": format!("Done — using {placeholder} now.") }, "finish_reason": "stop" }
+        ] })
+        .to_string();
+
+        let (inspected, mutation) = inspect_response_text(
+            &body,
+            "application/json",
+            &engine(),
+            DlpAction::Redact,
+            &session,
+        )
+        .expect("inspect response");
+
+        let parsed: serde_json::Value = serde_json::from_str(&inspected).expect("valid JSON");
+        let content = parsed["choices"][0]["message"]["content"]
+            .as_str()
+            .expect("content");
+        assert!(!content.contains(original));
+        assert!(!content.contains("[[GUARDIAN_REDACTED:"));
+        assert!(content.contains("<REDACTED>"));
+        assert!(mutation.neutralized);
+        assert!(!mutation.restored);
+    }
+
+    #[test]
+    fn sse_placeholder_echoed_in_delta_is_neutralized() {
+        let original = r#"api_key="abcdefghijklmnopqrstuvwxyz123456""#;
+        let mut session = RedactionSession::new();
+        let placeholder = session.redact_at(original, &engine(), Some("/messages/0/content"));
+        let body = format!(
+            "data: {}\n\ndata: [DONE]\n\n",
+            serde_json::json!({ "choices": [
+                { "delta": { "content": format!("the key is {placeholder}") } }
+            ] })
+        );
+
+        let (inspected, mutation) = inspect_response_text(
+            &body,
+            "text/event-stream",
+            &engine(),
+            DlpAction::Redact,
+            &session,
+        )
+        .expect("inspect response");
+
+        assert!(!inspected.contains(original));
+        assert!(!inspected.contains("[[GUARDIAN_REDACTED:"));
+        assert!(inspected.contains("<REDACTED>"));
+        assert!(mutation.neutralized);
     }
 
     #[test]
@@ -781,7 +881,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn request_placeholders_are_restored_only_after_upstream_returns() {
+    async fn plain_text_response_placeholder_is_never_restored() {
         let app = Router::new().route("/echo", any(|body: String| async move { body }));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
@@ -819,7 +919,12 @@ mod tests {
             .await
             .expect("read response");
 
-        assert_eq!(response_body.as_ref(), original.as_bytes());
+        // A plain-text echo has no structure to scope restoration to: the
+        // echoed placeholder is neutralized, never re-materialized.
+        let body = String::from_utf8_lossy(&response_body).into_owned();
+        assert!(!body.contains("192.168.10.25"));
+        assert!(!body.contains("[[GUARDIAN_REDACTED:"));
+        assert!(body.contains("<REDACTED>"));
         server.abort();
     }
 

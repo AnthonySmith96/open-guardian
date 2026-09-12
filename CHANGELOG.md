@@ -1,5 +1,36 @@
 # Changelog
 
+## v0.6.1 - Model-echo fix: placeholder restoration is position-scoped (2026-09-11)
+
+### Fixed
+
+- **Model-echo attack (critical, externally reported and confirmed)**: response
+  restoration blindly replaced session placeholders *anywhere* in the upstream
+  response, so a model that echoed `[[GUARDIAN_REDACTED:…]]` back inside its
+  own completion re-materialized the original secret — a value it was never
+  shown — at a position the model chose. Restoration is now scoped to the
+  request position the value was redacted from (RFC 6901 JSON pointer tail
+  match), covering upstreams that structurally mirror the request under a
+  wrapper key. A placeholder found anywhere else — model-authored text,
+  object keys, non-JSON or pointer-less bodies — is neutralized to
+  `<REDACTED>` instead of restored. Fail-closed: without pointer context
+  there is no restoration.
+- Regression-gated in the corpus: `response-model-echo-placeholder-json` and
+  `response-model-echo-placeholder-sse` replay the attack end to end through
+  a mock upstream that repeats the placeholder it received (new
+  `response_mode = "model_echo"`); the gate requires that no secret
+  re-materializes **and** no raw token reaches the client. The benchmark's
+  `echo` upstream now nests the received request structurally instead of as
+  an escaped string, so the `request-echo-restoration` case proves the
+  legitimate round-trip on real structure.
+
+### Changed
+
+- The public behavior contract of reversible redaction narrows: restoration
+  happens only at structurally corresponding response positions, not
+  wherever a placeholder appears. Provider traffic from real OpenAI-compatible
+  endpoints is unaffected — they never echo request bodies back.
+
 ## v0.6.0 - Context DLP: clean tool output before it enters the model (2026-08-22)
 
 ### New
