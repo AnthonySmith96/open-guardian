@@ -37,3 +37,7 @@ Thumbs.db
 deploy_test/
 logs/
 .zcode/
+
+# AI agent instructions (kept local, not part of the repo)
+AGENTS.md
+CLAUDE.md
